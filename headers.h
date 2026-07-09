@@ -1,3 +1,4 @@
+// Master header — includes, types, and global declarations.
 #pragma once
 
 #include <cstdint>
@@ -18,6 +19,8 @@
 #include <algorithm>
 #include <memory>
 
+#include "FrameCallback.h"
+
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -29,6 +32,7 @@ extern "C" {
 #include "PipeDecoder.h"
 #include "RtspReader.h"
 
+// Per-camera runtime info.
 struct CamInfo {
     std::string url;
     int codec;
@@ -40,7 +44,8 @@ struct CamInfo {
 
 extern std::vector<CamInfo> g_cams;
 extern std::vector<std::atomic<bool>*> g_camRunning;
-extern std::mutex g_camMtx;
+extern std::mutex g_camMtx;    // protects g_cams / g_camRunning
+extern std::mutex g_printMtx;  // serialises stdout output
 extern volatile std::sig_atomic_t g_running;
 
 int avCodecToV4l2(int avCodecId);

@@ -1,7 +1,7 @@
 CMakeFiles/rtsp_decoder.dir/func.cpp.o: \
- /home/vitalyvaryvdin/Jetson\ Multimedia/func.cpp \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/func.cpp \
  /usr/include/stdc-predef.h \
- /home/vitalyvaryvdin/Jetson\ Multimedia/headers.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/headers.h \
  /usr/include/c++/11/cstdint \
  /usr/include/aarch64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/aarch64-linux-gnu/c++/11/bits/os_defines.h \
@@ -225,6 +225,8 @@ CMakeFiles/rtsp_decoder.dir/func.cpp.o: \
  /usr/include/c++/11/ext/concurrence.h \
  /usr/include/c++/11/bits/shared_ptr_atomic.h \
  /usr/include/c++/11/backward/auto_ptr.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/FrameCallback.h \
+ /usr/include/c++/11/functional /usr/include/c++/11/bits/std_function.h \
  /usr/include/aarch64-linux-gnu/libavformat/avformat.h \
  /usr/include/aarch64-linux-gnu/libavcodec/avcodec.h \
  /usr/include/aarch64-linux-gnu/libavutil/samplefmt.h \
@@ -289,50 +291,19 @@ CMakeFiles/rtsp_decoder.dir/func.cpp.o: \
  /usr/include/aarch64-linux-gnu/libavformat/avio.h \
  /usr/include/aarch64-linux-gnu/libavutil/common.h \
  /usr/include/aarch64-linux-gnu/libavformat/version.h \
- /home/vitalyvaryvdin/Jetson\ Multimedia/SwDecoder.h \
- /usr/include/c++/11/functional /usr/include/c++/11/bits/std_function.h \
- /usr/include/aarch64-linux-gnu/libavutil/imgutils.h \
- /usr/include/aarch64-linux-gnu/libavutil/pixdesc.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/SwDecoder.h \
  /usr/include/aarch64-linux-gnu/libswscale/swscale.h \
  /usr/include/aarch64-linux-gnu/libswscale/version.h \
- /home/vitalyvaryvdin/Jetson\ Multimedia/NvV4l2Decoder.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/NvV4l2Decoder.h \
  /usr/include/linux/videodev2.h /usr/include/linux/ioctl.h \
  /usr/include/aarch64-linux-gnu/asm/ioctl.h \
  /usr/include/asm-generic/ioctl.h /usr/include/linux/v4l2-common.h \
  /usr/include/linux/v4l2-controls.h /usr/include/linux/const.h \
- /usr/src/jetson_multimedia_api/include/NvVideoDecoder.h \
- /usr/src/jetson_multimedia_api/include/NvV4l2Element.h \
- /usr/src/jetson_multimedia_api/include/NvElement.h \
- /usr/src/jetson_multimedia_api/include/NvElementProfiler.h \
- /usr/include/c++/11/map /usr/include/c++/11/bits/stl_tree.h \
- /usr/include/c++/11/bits/stl_map.h \
- /usr/include/c++/11/bits/stl_multimap.h \
- /usr/include/c++/11/bits/erase_if.h \
- /usr/src/jetson_multimedia_api/include/NvV4l2ElementPlane.h \
- /usr/src/jetson_multimedia_api/include/NvLogging.h \
- /usr/src/jetson_multimedia_api/include/NvBuffer.h \
- /usr/src/jetson_multimedia_api/include/v4l2_nv_extensions.h \
- /usr/src/jetson_multimedia_api/include/NvBuffer.h \
- /usr/src/jetson_multimedia_api/include/NvBufSurface.h \
- /usr/include/c++/11/fstream /usr/include/c++/11/bits/codecvt.h \
- /usr/include/aarch64-linux-gnu/c++/11/bits/basic_file.h \
- /usr/include/aarch64-linux-gnu/c++/11/bits/c++io.h \
- /usr/include/c++/11/bits/fstream.tcc /usr/include/malloc.h \
- /usr/include/fcntl.h /usr/include/aarch64-linux-gnu/bits/fcntl.h \
- /usr/include/aarch64-linux-gnu/bits/fcntl-linux.h \
- /usr/include/aarch64-linux-gnu/bits/types/struct_iovec.h \
- /usr/include/linux/falloc.h /usr/include/aarch64-linux-gnu/bits/stat.h \
- /usr/include/aarch64-linux-gnu/bits/struct_stat.h /usr/include/poll.h \
- /usr/include/aarch64-linux-gnu/sys/poll.h \
- /usr/include/aarch64-linux-gnu/bits/poll.h \
- /usr/src/jetson_multimedia_api/include/nvbufsurface.h \
- /usr/lib/gcc/aarch64-linux-gnu/11/include/stdbool.h \
- /usr/src/jetson_multimedia_api/include/nvbufsurftransform.h \
- /home/vitalyvaryvdin/Jetson\ Multimedia/PipeDecoder.h \
- /home/vitalyvaryvdin/Jetson\ Multimedia/RtspReader.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/PipeDecoder.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/RtspReader.h \
  /usr/include/aarch64-linux-gnu/libavcodec/bsf.h \
- /home/vitalyvaryvdin/Jetson\ Multimedia/Display.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/Display.h \
  /usr/include/X11/Xlib.h /usr/include/X11/X.h \
  /usr/include/X11/Xfuncproto.h /usr/include/X11/Xosdefs.h \
  /usr/include/X11/Xutil.h /usr/include/X11/keysym.h \
- /usr/include/X11/keysymdef.h /usr/include/X11/Xatom.h
+ /usr/include/X11/keysymdef.h

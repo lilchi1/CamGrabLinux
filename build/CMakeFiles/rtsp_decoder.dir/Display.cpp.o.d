@@ -1,7 +1,7 @@
 CMakeFiles/rtsp_decoder.dir/Display.cpp.o: \
- /home/vitalyvaryvdin/Jetson\ Multimedia/Display.cpp \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/Display.cpp \
  /usr/include/stdc-predef.h \
- /home/vitalyvaryvdin/Jetson\ Multimedia/Display.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/Display.h \
  /usr/include/c++/11/cstdint \
  /usr/include/aarch64-linux-gnu/c++/11/bits/c++config.h \
  /usr/include/aarch64-linux-gnu/c++/11/bits/os_defines.h \
@@ -130,8 +130,111 @@ CMakeFiles/rtsp_decoder.dir/Display.cpp.o: \
  /usr/include/X11/X.h /usr/include/X11/Xfuncproto.h \
  /usr/include/X11/Xosdefs.h /usr/include/X11/Xutil.h \
  /usr/include/X11/keysym.h /usr/include/X11/keysymdef.h \
- /usr/include/X11/Xatom.h \
- /usr/include/aarch64-linux-gnu/libswscale/swscale.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/headers.h \
+ /usr/include/c++/11/cstring /usr/include/string.h /usr/include/strings.h \
+ /usr/include/c++/11/ctime /usr/include/c++/11/csignal \
+ /usr/include/signal.h \
+ /usr/include/aarch64-linux-gnu/bits/signum-generic.h \
+ /usr/include/aarch64-linux-gnu/bits/signum-arch.h \
+ /usr/include/aarch64-linux-gnu/bits/types/sig_atomic_t.h \
+ /usr/include/aarch64-linux-gnu/bits/types/siginfo_t.h \
+ /usr/include/aarch64-linux-gnu/bits/types/__sigval_t.h \
+ /usr/include/aarch64-linux-gnu/bits/siginfo-arch.h \
+ /usr/include/aarch64-linux-gnu/bits/siginfo-consts.h \
+ /usr/include/aarch64-linux-gnu/bits/siginfo-consts-arch.h \
+ /usr/include/aarch64-linux-gnu/bits/types/sigval_t.h \
+ /usr/include/aarch64-linux-gnu/bits/types/sigevent_t.h \
+ /usr/include/aarch64-linux-gnu/bits/sigevent-consts.h \
+ /usr/include/aarch64-linux-gnu/bits/sigaction.h \
+ /usr/include/aarch64-linux-gnu/bits/sigcontext.h \
+ /usr/include/aarch64-linux-gnu/asm/sigcontext.h \
+ /usr/include/linux/types.h /usr/include/aarch64-linux-gnu/asm/types.h \
+ /usr/include/asm-generic/types.h /usr/include/asm-generic/int-ll64.h \
+ /usr/include/aarch64-linux-gnu/asm/bitsperlong.h \
+ /usr/include/asm-generic/bitsperlong.h /usr/include/linux/posix_types.h \
+ /usr/include/linux/stddef.h \
+ /usr/include/aarch64-linux-gnu/asm/posix_types.h \
+ /usr/include/asm-generic/posix_types.h \
+ /usr/include/aarch64-linux-gnu/asm/sve_context.h \
+ /usr/include/aarch64-linux-gnu/bits/types/stack_t.h \
+ /usr/include/aarch64-linux-gnu/sys/ucontext.h \
+ /usr/include/aarch64-linux-gnu/sys/procfs.h \
+ /usr/include/aarch64-linux-gnu/sys/time.h \
+ /usr/include/aarch64-linux-gnu/sys/user.h \
+ /usr/include/aarch64-linux-gnu/bits/procfs.h \
+ /usr/include/aarch64-linux-gnu/bits/procfs-id.h \
+ /usr/include/aarch64-linux-gnu/bits/procfs-prregset.h \
+ /usr/include/aarch64-linux-gnu/bits/procfs-extra.h \
+ /usr/include/aarch64-linux-gnu/bits/sigstack.h \
+ /usr/include/aarch64-linux-gnu/bits/sigstksz.h /usr/include/unistd.h \
+ /usr/include/aarch64-linux-gnu/bits/posix_opt.h \
+ /usr/include/aarch64-linux-gnu/bits/environments.h \
+ /usr/include/aarch64-linux-gnu/bits/confname.h \
+ /usr/include/aarch64-linux-gnu/bits/getopt_posix.h \
+ /usr/include/aarch64-linux-gnu/bits/getopt_core.h \
+ /usr/include/aarch64-linux-gnu/bits/unistd_ext.h \
+ /usr/include/linux/close_range.h \
+ /usr/include/aarch64-linux-gnu/bits/ss_flags.h \
+ /usr/include/aarch64-linux-gnu/bits/types/struct_sigstack.h \
+ /usr/include/aarch64-linux-gnu/bits/sigthread.h \
+ /usr/include/aarch64-linux-gnu/bits/signal_ext.h \
+ /usr/include/c++/11/vector /usr/include/c++/11/bits/stl_uninitialized.h \
+ /usr/include/c++/11/bits/stl_vector.h \
+ /usr/include/c++/11/bits/stl_bvector.h \
+ /usr/include/c++/11/bits/vector.tcc /usr/include/c++/11/mutex \
+ /usr/include/c++/11/tuple /usr/include/c++/11/utility \
+ /usr/include/c++/11/bits/stl_relops.h /usr/include/c++/11/array \
+ /usr/include/c++/11/bits/uses_allocator.h \
+ /usr/include/c++/11/bits/invoke.h /usr/include/c++/11/chrono \
+ /usr/include/c++/11/ratio /usr/include/c++/11/limits \
+ /usr/include/c++/11/bits/parse_numbers.h /usr/include/c++/11/exception \
+ /usr/include/c++/11/bits/exception_ptr.h \
+ /usr/include/c++/11/bits/cxxabi_init_exception.h \
+ /usr/include/c++/11/typeinfo /usr/include/c++/11/bits/nested_exception.h \
+ /usr/include/c++/11/system_error \
+ /usr/include/aarch64-linux-gnu/c++/11/bits/error_constants.h \
+ /usr/include/c++/11/stdexcept /usr/include/c++/11/bits/std_mutex.h \
+ /usr/include/c++/11/bits/unique_lock.h /usr/include/c++/11/atomic \
+ /usr/include/c++/11/bits/atomic_base.h \
+ /usr/include/c++/11/bits/atomic_lockfree_defines.h \
+ /usr/include/c++/11/thread /usr/include/c++/11/bits/std_thread.h \
+ /usr/include/c++/11/bits/refwrap.h /usr/include/c++/11/bits/unique_ptr.h \
+ /usr/include/c++/11/bits/this_thread_sleep.h \
+ /usr/include/c++/11/iostream /usr/include/c++/11/ostream \
+ /usr/include/c++/11/ios /usr/include/c++/11/bits/ios_base.h \
+ /usr/include/c++/11/bits/locale_classes.h \
+ /usr/include/c++/11/bits/locale_classes.tcc \
+ /usr/include/c++/11/streambuf /usr/include/c++/11/bits/streambuf.tcc \
+ /usr/include/c++/11/bits/basic_ios.h \
+ /usr/include/c++/11/bits/locale_facets.h /usr/include/c++/11/cwctype \
+ /usr/include/wctype.h /usr/include/aarch64-linux-gnu/bits/wctype-wchar.h \
+ /usr/include/aarch64-linux-gnu/c++/11/bits/ctype_base.h \
+ /usr/include/c++/11/bits/streambuf_iterator.h \
+ /usr/include/aarch64-linux-gnu/c++/11/bits/ctype_inline.h \
+ /usr/include/c++/11/bits/locale_facets.tcc \
+ /usr/include/c++/11/bits/basic_ios.tcc \
+ /usr/include/c++/11/bits/ostream.tcc /usr/include/c++/11/istream \
+ /usr/include/c++/11/bits/istream.tcc /usr/include/c++/11/sstream \
+ /usr/include/c++/11/bits/sstream.tcc /usr/include/c++/11/algorithm \
+ /usr/include/c++/11/bits/stl_algo.h \
+ /usr/include/c++/11/bits/algorithmfwd.h \
+ /usr/include/c++/11/bits/stl_heap.h \
+ /usr/include/c++/11/bits/stl_tempbuf.h \
+ /usr/include/c++/11/bits/uniform_int_dist.h /usr/include/c++/11/memory \
+ /usr/include/c++/11/bits/stl_raw_storage_iter.h \
+ /usr/include/c++/11/bits/align.h /usr/include/c++/11/bit \
+ /usr/include/c++/11/bits/shared_ptr.h \
+ /usr/include/c++/11/bits/shared_ptr_base.h \
+ /usr/include/c++/11/bits/allocated_ptr.h \
+ /usr/include/c++/11/ext/aligned_buffer.h \
+ /usr/include/c++/11/ext/concurrence.h \
+ /usr/include/c++/11/bits/shared_ptr_atomic.h \
+ /usr/include/c++/11/backward/auto_ptr.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/FrameCallback.h \
+ /usr/include/c++/11/functional /usr/include/c++/11/bits/std_function.h \
+ /usr/include/aarch64-linux-gnu/libavformat/avformat.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/avcodec.h \
+ /usr/include/aarch64-linux-gnu/libavutil/samplefmt.h \
  /usr/include/aarch64-linux-gnu/libavutil/avutil.h \
  /usr/include/aarch64-linux-gnu/libavutil/common.h \
  /usr/include/inttypes.h \
@@ -153,21 +256,54 @@ CMakeFiles/rtsp_decoder.dir/Display.cpp.o: \
  /usr/include/aarch64-linux-gnu/bits/mathcalls.h \
  /usr/include/aarch64-linux-gnu/bits/mathcalls-narrow.h \
  /usr/include/aarch64-linux-gnu/bits/iscanonical.h \
- /usr/include/c++/11/stdlib.h /usr/include/string.h \
- /usr/include/strings.h \
+ /usr/include/c++/11/stdlib.h \
  /usr/include/aarch64-linux-gnu/libavutil/attributes.h \
  /usr/include/aarch64-linux-gnu/libavutil/macros.h \
  /usr/include/aarch64-linux-gnu/libavutil/version.h \
  /usr/include/aarch64-linux-gnu/libavutil/avconfig.h \
  /usr/include/aarch64-linux-gnu/libavutil/mem.h \
  /usr/include/aarch64-linux-gnu/libavutil/error.h \
- /usr/include/aarch64-linux-gnu/libavutil/avutil.h \
  /usr/include/aarch64-linux-gnu/libavutil/rational.h \
  /usr/include/aarch64-linux-gnu/libavutil/mathematics.h \
  /usr/include/aarch64-linux-gnu/libavutil/intfloat.h \
  /usr/include/aarch64-linux-gnu/libavutil/log.h \
  /usr/include/aarch64-linux-gnu/libavutil/pixfmt.h \
+ /usr/include/aarch64-linux-gnu/libavutil/attributes.h \
+ /usr/include/aarch64-linux-gnu/libavutil/avutil.h \
+ /usr/include/aarch64-linux-gnu/libavutil/buffer.h \
+ /usr/include/aarch64-linux-gnu/libavutil/cpu.h \
+ /usr/include/aarch64-linux-gnu/libavutil/channel_layout.h \
+ /usr/include/aarch64-linux-gnu/libavutil/dict.h \
+ /usr/include/aarch64-linux-gnu/libavutil/frame.h \
+ /usr/include/aarch64-linux-gnu/libavutil/buffer.h \
+ /usr/include/aarch64-linux-gnu/libavutil/dict.h \
+ /usr/include/aarch64-linux-gnu/libavutil/samplefmt.h \
+ /usr/include/aarch64-linux-gnu/libavutil/hwcontext.h \
+ /usr/include/aarch64-linux-gnu/libavutil/frame.h \
  /usr/include/aarch64-linux-gnu/libavutil/log.h \
  /usr/include/aarch64-linux-gnu/libavutil/pixfmt.h \
+ /usr/include/aarch64-linux-gnu/libavutil/rational.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/bsf.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/codec_id.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/codec_par.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/packet.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/version.h \
+ /usr/include/aarch64-linux-gnu/libavutil/version.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/codec.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/codec_id.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/codec_desc.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/version.h \
+ /usr/include/aarch64-linux-gnu/libavformat/avio.h \
+ /usr/include/aarch64-linux-gnu/libavutil/common.h \
+ /usr/include/aarch64-linux-gnu/libavformat/version.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/SwDecoder.h \
+ /usr/include/aarch64-linux-gnu/libswscale/swscale.h \
  /usr/include/aarch64-linux-gnu/libswscale/version.h \
- /usr/include/aarch64-linux-gnu/libavutil/version.h
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/NvV4l2Decoder.h \
+ /usr/include/linux/videodev2.h /usr/include/linux/ioctl.h \
+ /usr/include/aarch64-linux-gnu/asm/ioctl.h \
+ /usr/include/asm-generic/ioctl.h /usr/include/linux/v4l2-common.h \
+ /usr/include/linux/v4l2-controls.h /usr/include/linux/const.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/PipeDecoder.h \
+ /home/vitalyvaryvdin/Jetson/CamGrabLinux/RtspReader.h \
+ /usr/include/aarch64-linux-gnu/libavcodec/bsf.h

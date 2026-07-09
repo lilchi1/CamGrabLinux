@@ -1,4 +1,4 @@
-# Install script for directory: /home/vitalyvaryvdin/Jetson Multimedia
+# Install script for directory: /home/vitalyvaryvdin/Jetson/CamGrabLinux
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -50,5 +50,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/home/vitalyvaryvdin/Jetson Multimedia/build/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

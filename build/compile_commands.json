@@ -1,37 +1,82 @@
 [
 {
-  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
-  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/main.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/main.cpp\"",
-  "file": "/home/vitalyvaryvdin/Jetson Multimedia/main.cpp"
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/main.cpp.o -c /home/vitalyvaryvdin/Jetson/CamGrabLinux/main.cpp",
+  "file": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/main.cpp"
 },
 {
-  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
-  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/func.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/func.cpp\"",
-  "file": "/home/vitalyvaryvdin/Jetson Multimedia/func.cpp"
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/func.cpp.o -c /home/vitalyvaryvdin/Jetson/CamGrabLinux/func.cpp",
+  "file": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/func.cpp"
 },
 {
-  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
-  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/RtspReader.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/RtspReader.cpp\"",
-  "file": "/home/vitalyvaryvdin/Jetson Multimedia/RtspReader.cpp"
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/RtspReader.cpp.o -c /home/vitalyvaryvdin/Jetson/CamGrabLinux/RtspReader.cpp",
+  "file": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/RtspReader.cpp"
 },
 {
-  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
-  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/SwDecoder.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/SwDecoder.cpp\"",
-  "file": "/home/vitalyvaryvdin/Jetson Multimedia/SwDecoder.cpp"
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/SwDecoder.cpp.o -c /home/vitalyvaryvdin/Jetson/CamGrabLinux/SwDecoder.cpp",
+  "file": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/SwDecoder.cpp"
 },
 {
-  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
-  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/NvV4l2Decoder.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/NvV4l2Decoder.cpp\"",
-  "file": "/home/vitalyvaryvdin/Jetson Multimedia/NvV4l2Decoder.cpp"
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/NvV4l2Decoder.cpp.o -c /home/vitalyvaryvdin/Jetson/CamGrabLinux/NvV4l2Decoder.cpp",
+  "file": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/NvV4l2Decoder.cpp"
 },
 {
-  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
-  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/PipeDecoder.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/PipeDecoder.cpp\"",
-  "file": "/home/vitalyvaryvdin/Jetson Multimedia/PipeDecoder.cpp"
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/PipeDecoder.cpp.o -c /home/vitalyvaryvdin/Jetson/CamGrabLinux/PipeDecoder.cpp",
+  "file": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/PipeDecoder.cpp"
 },
 {
-  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
-  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/Display.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/Display.cpp\"",
-  "file": "/home/vitalyvaryvdin/Jetson Multimedia/Display.cpp"
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/Display.cpp.o -c /home/vitalyvaryvdin/Jetson/CamGrabLinux/Display.cpp",
+  "file": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/Display.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson/CamGrabLinux/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++14 -o CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.o -c /usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp",
+  "file": "/usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp"
 }
 ]

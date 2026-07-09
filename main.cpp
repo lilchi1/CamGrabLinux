@@ -1,3 +1,4 @@
+// Entry point. Spawns a thread per camera, manages dynamic add at runtime.
 #include "headers.h"
 
 volatile std::sig_atomic_t g_running = 1;
@@ -44,6 +45,7 @@ int main() {
     }
     printAllStatus();
 
+    // Main loop: monitor cameras, allow adding new ones
     while (g_running) {
         bool anyAlive = false;
         {
@@ -52,6 +54,7 @@ int main() {
                 if (f && f->load()) { anyAlive = true; break; }
         }
 
+        // If all cameras closed, offer reconnect or exit
         if (!anyAlive) {
             std::cout << "\nAll cameras closed." << std::endl;
             std::cout << "[1] Connect new camera" << std::endl;
@@ -62,6 +65,7 @@ int main() {
             if (opt != "1") break;
         }
 
+        // Prompt for new camera URL
         std::cout << "Enter new RTSP URL (or 'exit' to quit): ";
         std::string newUrl;
         std::getline(std::cin, newUrl);
@@ -79,6 +83,7 @@ int main() {
         printAllStatus();
     }
 
+    // Shutdown: signal all threads, join, cleanup
     {
         std::lock_guard<std::mutex> lock(g_camMtx);
         for (auto* f : g_camRunning) if (f) *f = false;

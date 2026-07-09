@@ -31,9 +31,6 @@ default_target: all
 
 .SUFFIXES: .hpux_make_needs_suffix_list
 
-# Produce verbose output by default.
-VERBOSE = 1
-
 # Command-line flag to silence nested $(MAKE).
 $(VERBOSE)MAKESILENT = -s
 
@@ -60,10 +57,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = "/home/vitalyvaryvdin/Jetson Multimedia"
+CMAKE_SOURCE_DIR = /home/vitalyvaryvdin/Jetson/CamGrabLinux
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = "/home/vitalyvaryvdin/Jetson Multimedia/build"
+CMAKE_BINARY_DIR = /home/vitalyvaryvdin/Jetson/CamGrabLinux/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -90,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/vitalyvaryvdin/Jetson Multimedia/build/CMakeFiles" "/home/vitalyvaryvdin/Jetson Multimedia/build//CMakeFiles/progress.marks"
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/vitalyvaryvdin/Jetson/CamGrabLinux/build/CMakeFiles /home/vitalyvaryvdin/Jetson/CamGrabLinux/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start "/home/vitalyvaryvdin/Jetson Multimedia/build/CMakeFiles" 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/vitalyvaryvdin/Jetson/CamGrabLinux/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -300,6 +297,222 @@ main.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/main.cpp.s
 .PHONY : main.cpp.s
 
+usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.o: usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.i: usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.s: usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.o: usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.i: usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.s: usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvElement.o: usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElement.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvElement.i: usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElement.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvElement.s: usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElement.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElement.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.o: usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.i: usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.s: usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.o: usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.i: usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.s: usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.o: usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.i: usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.s: usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.o: usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.i: usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.s: usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.o: usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.i: usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.s: usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.cpp.s
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.o: usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.o
+
+# target to build an object file
+usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.o
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.o
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.i: usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.i
+
+# target to preprocess a source file
+usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.i
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.i
+
+usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.s: usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.s
+
+# target to generate assembly for a file
+usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rtsp_decoder.dir/build.make CMakeFiles/rtsp_decoder.dir/usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.s
+.PHONY : usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -330,6 +543,33 @@ help:
 	@echo "... main.o"
 	@echo "... main.i"
 	@echo "... main.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvBufSurface.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvBuffer.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvElement.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvElement.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvElement.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvElementProfiler.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvLogging.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvUtils.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2Element.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvV4l2ElementPlane.s"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.o"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.i"
+	@echo "... usr/src/jetson_multimedia_api/samples/common/classes/NvVideoDecoder.s"
 .PHONY : help
 
 

@@ -6,5 +6,5 @@ CXX_DEFINES = -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__
 
 CXX_INCLUDES = -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4
 
-CXX_FLAGS = -std=gnu++11
+CXX_FLAGS = -std=gnu++14
 

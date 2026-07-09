@@ -1,429 +1,291 @@
+// func.cpp — globals, utilities, camera thread, NAL parsing.
 #include "headers.h"
 #include "Display.h"
-
-#include <cstdlib>
-#include <linux/videodev2.h>
+#include <unistd.h>
 
 std::vector<CamInfo> g_cams;
 std::vector<std::atomic<bool>*> g_camRunning;
 std::mutex g_camMtx;
+std::mutex g_printMtx;
 
-int avCodecToV4l2(int avCodecId) {
-    if (avCodecId == AV_CODEC_ID_H264) return V4L2_PIX_FMT_H264;
-    if (avCodecId == AV_CODEC_ID_HEVC) return V4L2_PIX_FMT_H265;
-    return 0;
+// Atomic-wide running flag (declared in main.cpp)
+extern volatile std::sig_atomic_t g_running;
+
+// Thread-safe logging with timestamp
+void logWrite(const std::string& level, const std::string& url,
+              const std::string& msg) {
+    std::lock_guard<std::mutex> lock(g_printMtx);
+    time_t now = time(nullptr);
+    struct tm* tm = localtime(&now);
+    char tbuf[32];
+    strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm);
+    std::cout << "[" << tbuf << "][" << level << "][" << url << "] "
+              << msg << std::endl;
 }
 
-void logWrite(const std::string& level, const std::string& url, const std::string& msg) {
-    auto now = std::chrono::system_clock::now();
-    std::time_t t = std::chrono::system_clock::to_time_t(now);
-    char buf[64];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
-    std::cout << "[" << level << "][" << buf << "][" << url << "] " << msg << std::endl;
-}
-
+// Print status of all cameras
 void printAllStatus() {
-    std::lock_guard<std::mutex> lock(g_camMtx);
-    std::cout << "\033[2J\033[1;1H";
-    std::cout << "===========================================" << std::endl;
-    std::cout << "         CAMERA STATUSES" << std::endl;
-    std::cout << "===========================================" << std::endl;
-    for (size_t i = 0; i < g_cams.size(); i++) {
+    std::lock_guard<std::mutex> lock(g_printMtx);
+    std::lock_guard<std::mutex> lock2(g_camMtx);
+    std::cout << "\n=== Camera Status ===" << std::endl;
+    for (int i = 0; i < (int)g_cams.size(); i++) {
         auto& c = g_cams[i];
-        bool alive = i < g_camRunning.size() && g_camRunning[i] && g_camRunning[i]->load();
-        std::cout << "  Camera:  " << c.url
-             << "  [" << (alive ? "ACTIVE" : "CLOSED") << "]"
-             << "  [" << (c.connected ? "CONNECTED" : "DISCONNECTED") << "]" << std::endl;
-        std::cout << "  Codec:   " << (c.codec == AV_CODEC_ID_H264 ? "H.264" :
-                                  c.codec == AV_CODEC_ID_HEVC ? "H.265" : "Unknown") << std::endl;
-        std::cout << "  Res:     " << c.width << "x" << c.height << std::endl;
-        std::cout << "  FPS:     " << (int)c.fps << std::endl;
-        std::cout << "-------------------------------------------" << std::endl;
+        std::string codecStr;
+        if (c.codec == AV_CODEC_ID_H264) codecStr = "H.264";
+        else if (c.codec == AV_CODEC_ID_H265) codecStr = "H.265";
+        else if (c.codec == AV_CODEC_ID_MJPEG) codecStr = "MJPEG";
+        else codecStr = "Unknown";
+        std::cout << "[" << i << "] " << c.url
+                  << " | " << codecStr
+                  << " | " << c.width << "x" << c.height
+                  << " | " << (c.fps > 0 ? std::to_string(c.fps) : "N/A") << " fps"
+                  << " | " << (c.connected ? "Connected" : "Disconnected")
+                  << std::endl;
     }
-    std::cout << "Enter new URL to add camera | 'exit' to quit" << std::endl;
-    std::cout << "===========================================" << std::endl;
+    std::cout << "=====================\n" << std::endl;
 }
 
 void setCamConnected(int camIdx, bool connected, const std::string& url) {
     std::lock_guard<std::mutex> lock(g_camMtx);
-    if (g_cams[camIdx].connected == connected) return;
-    g_cams[camIdx].connected = connected;
-    logWrite(connected ? "INFO" : "WARN", url,
-             connected ? "Connected" : "Disconnected");
-}
-
-static void scanNalUnits(const uint8_t* data, int size,
-                          std::vector<std::pair<const uint8_t*, int>>& sps,
-                          std::vector<std::pair<const uint8_t*, int>>& pps)
-{
-    size_t i = 0;
-    while (i < (size_t)size) {
-        int startCode = 0;
-        if (i + 4 <= (size_t)size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1)
-            startCode = 4;
-        else if (i + 3 <= (size_t)size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 1)
-            startCode = 3;
-        else {
-            i++;
-            continue;
-        }
-        if (i + startCode >= (size_t)size) break;
-        int nalType = data[i + startCode] & 0x1F;
-        size_t nalStart = i;
-        i += startCode + 1;
-        while (i < (size_t)size) {
-            if (i + 3 < (size_t)size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 1) break;
-            if (i + 4 < (size_t)size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1) break;
-            i++;
-        }
-        int nalSize = (int)(i - nalStart);
-        if (nalType == 7) {
-            sps.push_back({data + nalStart, nalSize});
-        } else if (nalType == 8) {
-            pps.push_back({data + nalStart, nalSize});
-        }
+    if (camIdx >= 0 && camIdx < (int)g_cams.size()) {
+        g_cams[camIdx].connected = connected;
     }
 }
 
-static std::vector<uint8_t> buildSpsPpsBuffer(
-    const std::vector<std::pair<const uint8_t*, int>>& sps,
-    const std::vector<std::pair<const uint8_t*, int>>& pps)
-{
-    std::vector<uint8_t> buf;
-    for (auto& n : sps) {
-        buf.insert(buf.end(), n.first, n.first + n.second);
-    }
-    for (auto& n : pps) {
-        buf.insert(buf.end(), n.first, n.first + n.second);
-    }
-    return buf;
-}
-
-bool isValidNalUnit(const uint8_t* data, size_t size)
-{
-    if (!data || size < 4) return false;
-    if (size > 4 * 1024 * 1024) return false;
-    int startCode = 0;
-    if (data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1)
-        startCode = 4;
-    else if (data[0] == 0 && data[1] == 0 && data[2] == 1)
-        startCode = 3;
-    else
-        return false;
-    if ((size_t)startCode >= size) return false;
-    int nalType = data[startCode] & 0x1F;
-    if (nalType > 23) return false;
-    return true;
-}
-
-int findNalUnits(const uint8_t* data, size_t size,
-                 std::vector<std::pair<const uint8_t*, int>>& nals)
-{
-    int count = 0;
-    size_t i = 0;
-    while (i < size) {
-        int startCode = 0;
-        if (i + 4 <= size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1)
-            startCode = 4;
-        else if (i + 3 <= size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 1)
-            startCode = 3;
-        else { i++; continue; }
-        size_t nalStart = i;
-        i += startCode;
-        while (i < size) {
-            if (i + 3 < size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 1) break;
-            if (i + 4 < size && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1) break;
-            i++;
-        }
-        nals.push_back({data + nalStart, (int)(i - nalStart)});
-        count++;
-    }
-    return count;
-}
-
+// Main per-camera thread: RTSP → decode → display
 void cameraThread(std::string url, int camIdx) {
-    auto& running = *g_camRunning[camIdx];
-    running = true;
+    logWrite("INFO", url, "Camera thread started");
 
-    bool useNvdec = true;
-    bool usePipeDecoder = false;
-    const char* nvdecEnv = getenv("USE_NVDEC");
-    if (nvdecEnv && nvdecEnv[0] == '0' && nvdecEnv[1] == '\0')
-        useNvdec = false;
-    const char* pipeEnv = getenv("PIPE_DECODER");
-    if (pipeEnv && pipeEnv[0] == '1' && pipeEnv[1] == '\0')
-        usePipeDecoder = true;
-    int consecutiveFail = 0;
-    std::unique_ptr<VideoDisplay> display;
-
-    while (running && g_running) {
-        if (usePipeDecoder) {
-            PipeDecoder pipeDecoder;
-            if (!pipeDecoder.init(url, nullptr)) {
-                logWrite("ERROR", url, "PipeDecoder: popen failed. Retry in 5s...");
-                for (int i = 0; i < 5 && running && g_running; i++)
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
-                continue;
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(g_camMtx);
-                g_cams[camIdx].codec = AV_CODEC_ID_MJPEG;
-                g_cams[camIdx].width = 0;
-                g_cams[camIdx].height = 0;
-            }
-
-            auto pipeFrameCb = [&display, camIdx, url](uint8_t* y, uint8_t* uv,
-                                                       int w, int h,
-                                                       int sy, int suv,
-                                                       int64_t pts) {
-                if (!display) {
-                    display.reset(new VideoDisplay("Camera " + std::to_string(camIdx) + ": " + url, w, h));
-                    if (display->init()) {
-                        std::lock_guard<std::mutex> lock(g_camMtx);
-                        g_cams[camIdx].width = w;
-                        g_cams[camIdx].height = h;
-                    } else {
-                        logWrite("ERROR", url, "Failed to create display window");
-                        display.reset();
-                    }
-                }
-                if (display && !display->shouldQuit())
-                    display->showFrame(y, uv, w, h, sy, suv);
-            };
-            pipeDecoder.setFrameCallback(pipeFrameCb);
-
-            logWrite("INFO", url, "PipeDecoder started (ffmpeg MJPEG)");
-            setCamConnected(camIdx, true, url);
-
-            int64_t pts = 0;
-            uint64_t frameCount = 0;
-            auto lastFpsTime = std::chrono::steady_clock::now();
-
-            while (running && g_running) {
-                if (display && display->shouldQuit()) {
-                    logWrite("INFO", url, "Window closed");
-                    running = false;
-                    break;
-                }
-
-                int ret = pipeDecoder.readFrame(++pts);
-                if (ret < 0) {
-                    logWrite("WARN", url, "PipeDecoder read failed, reconnecting...");
-                    break;
-                }
-                if (ret == 0) continue;
-
-                frameCount++;
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration<double>(now - lastFpsTime).count();
-                if (elapsed >= 1.0) {
-                    {
-                        std::lock_guard<std::mutex> lock(g_camMtx);
-                        g_cams[camIdx].fps = frameCount / elapsed;
-                        g_cams[camIdx].width = pipeDecoder.width();
-                        g_cams[camIdx].height = pipeDecoder.height();
-                    }
-                    frameCount = 0;
-                    lastFpsTime = now;
-                    printAllStatus();
-                }
-            }
-
-            logWrite("INFO", url, "PipeDecoder stream ended");
-            pipeDecoder.close();
-            setCamConnected(camIdx, false, url);
-
-            if (!g_running || (display && display->shouldQuit())) break;
-
-            logWrite("INFO", url, "Reconnecting in 3s...");
-            for (int i = 0; i < 3 && running && g_running; i++)
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-
-        RtspReader reader;
-        if (!reader.open(url)) {
-            logWrite("ERROR", url, "Failed to open RTSP. Retry in 5s...");
-            for (int i = 0; i < 5 && running && g_running; i++)
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-
-        SwDecoder swDecoder;
-        NvV4l2Decoder nvDecoder;
-        bool decoderReady = false;
-
-        if (useNvdec) {
-            int v4l2Codec = avCodecToV4l2(reader.codecId());
-            if (v4l2Codec) {
-                if (reader.extradata() && reader.extradataSize() > 0)
-                    nvDecoder.setExtradata(reader.extradata(), reader.extradataSize());
-                decoderReady = nvDecoder.init(v4l2Codec, nullptr, 0, 0);
-            }
-            if (!decoderReady) {
-                logWrite("WARN", url, "NVDEC init failed, falling back to software decoder");
-                useNvdec = false;
-            }
-        }
-        if (!useNvdec) {
-            if (reader.extradata() && reader.extradataSize() > 0)
-                swDecoder.setExtradata(reader.extradata(), reader.extradataSize());
-            decoderReady = swDecoder.init(reader.codecId(), nullptr, 0, 0);
-        }
-        if (!decoderReady) {
-            logWrite("ERROR", url, "Failed to init decoder. Retry in 5s...");
-            reader.close();
-            for (int i = 0; i < 5 && running && g_running; i++)
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(g_camMtx);
-            g_cams[camIdx].codec = reader.codecId();
-            g_cams[camIdx].width = 0;
-            g_cams[camIdx].height = 0;
-        }
-
-        auto frameCb = [&display, camIdx, url](uint8_t* y, uint8_t* uv,
-                                                int w, int h,
-                                                int sy, int suv,
-                                                int64_t pts) {
-            if (!display) {
-                display.reset(new VideoDisplay("Camera " + std::to_string(camIdx) + ": " + url, w, h));
-                if (display->init()) {
-                    {
-                        std::lock_guard<std::mutex> lock(g_camMtx);
-                        g_cams[camIdx].width = w;
-                        g_cams[camIdx].height = h;
-                    }
-                } else {
-                    logWrite("ERROR", url, "Failed to create display window");
-                    display.reset();
-                }
-            }
-            if (display && !display->shouldQuit())
-                display->showFrame(y, uv, w, h, sy, suv);
-        };
-
-        if (useNvdec)
-            nvDecoder.setFrameCallback(frameCb);
-        else
-            swDecoder.setFrameCallback(frameCb);
-
-        logWrite("INFO", url, useNvdec ? "NVDEC decoder started" : "Software decoder started");
-        setCamConnected(camIdx, true, url);
-
-        uint8_t* pktData = nullptr;
-        int pktSize = 0;
-        int64_t pts = 0;
-        bool isKeyFrame = false;
-        uint64_t frameCount = 0;
-        auto lastFpsTime = std::chrono::steady_clock::now();
-
-        std::vector<std::pair<const uint8_t*, int>> cachedSps, cachedPps;
-        bool spsPpsReceived = (reader.extradata() && reader.extradataSize() > 0);
-        std::vector<uint8_t> combinedBuf;
-        int droppedFrames = 0;
-        int maxDroppedFrames = 30;
-        auto lastDecodeTime = std::chrono::steady_clock::now();
-
-        while (running && g_running) {
-            if (display && display->shouldQuit()) {
-                logWrite("INFO", url, "Window closed");
-                running = false;
-                break;
-            }
-
-            bool ok = reader.readPacket(pktData, pktSize, pts, isKeyFrame);
-            if (!ok) {
-                logWrite("WARN", url, "RTSP read failed, reconnecting...");
-                break;
-            }
-
-            if (!isValidNalUnit(pktData, pktSize)) {
-                if (++consecutiveFail > 50) {
-                    logWrite("WARN", url, "Too many invalid packets, reconnecting...");
-                    break;
-                }
-                continue;
-            }
-
-            scanNalUnits(pktData, pktSize, cachedSps, cachedPps);
-            if (!cachedSps.empty() && !cachedPps.empty())
-                spsPpsReceived = true;
-
-            if (!spsPpsReceived) {
-                consecutiveFail = 0;
-                continue;
-            }
-
-            std::vector<uint8_t> spsPpsBuf = buildSpsPpsBuffer(cachedSps, cachedPps);
-            combinedBuf.clear();
-            combinedBuf.insert(combinedBuf.end(), spsPpsBuf.begin(), spsPpsBuf.end());
-            combinedBuf.insert(combinedBuf.end(), pktData, pktData + pktSize);
-            const uint8_t* decodeData = combinedBuf.data();
-            int decodeSize = (int)combinedBuf.size();
-
-            auto now = std::chrono::steady_clock::now();
-            double decodeLatency = std::chrono::duration<double>(now - lastDecodeTime).count();
-            if (decodeLatency > 0.5 && !isKeyFrame && droppedFrames < maxDroppedFrames) {
-                droppedFrames++;
-                continue;
-            }
-            if (isKeyFrame) droppedFrames = 0;
-
-            lastDecodeTime = std::chrono::steady_clock::now();
-
-            ok = useNvdec ? nvDecoder.decode(decodeData, decodeSize, pts, isKeyFrame)
-                          : swDecoder.decode(decodeData, decodeSize, pts, isKeyFrame);
-            if (ok) {
-                consecutiveFail = 0;
-                frameCount++;
-
-                now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration<double>(now - lastFpsTime).count();
-                if (elapsed >= 1.0) {
-                    {
-                        std::lock_guard<std::mutex> lock(g_camMtx);
-                        g_cams[camIdx].fps = frameCount / elapsed;
-                        int w = useNvdec ? nvDecoder.width() : swDecoder.width();
-                        int h = useNvdec ? nvDecoder.height() : swDecoder.height();
-                        g_cams[camIdx].width = w;
-                        g_cams[camIdx].height = h;
-                    }
-                    frameCount = 0;
-                    lastFpsTime = now;
-                    printAllStatus();
-                }
-            } else {
-                if (++consecutiveFail > 50) {
-                    logWrite("WARN", url, "Too many decode failures, reconnecting...");
-                    break;
-                }
-            }
-        }
-
-        logWrite("INFO", url, "Stream ended, flushing decoder...");
-        if (useNvdec) {
-            nvDecoder.flush();
-            nvDecoder.close();
-        } else {
-            swDecoder.flush();
-            swDecoder.close();
-        }
-        reader.close();
+    RtspReader reader;
+    if (!reader.open(url)) {
+        logWrite("ERROR", url, "Failed to open RTSP stream");
         setCamConnected(camIdx, false, url);
-
-        if (!g_running || (display && display->shouldQuit())) break;
-
-        logWrite("INFO", url, "Reconnecting in 3s...");
-        for (int i = 0; i < 3 && running && g_running; i++)
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (camIdx >= 0 && camIdx < (int)g_camRunning.size())
+            *g_camRunning[camIdx] = false;
+        return;
     }
 
-    display.reset();
-    running = false;
-    logWrite("INFO", url, "Thread finished");
+    int codecId = reader.codecId();
+    int w = reader.width();
+    int h = reader.height();
+    double fps = 0.0;
+
+    logWrite("INFO", url, "Codec: " + std::to_string(codecId) +
+                          " Resolution: " + std::to_string(w) + "x" +
+                          std::to_string(h));
+
+    {
+        std::lock_guard<std::mutex> lock(g_camMtx);
+        if (camIdx >= 0 && camIdx < (int)g_cams.size()) {
+            g_cams[camIdx].codec = codecId;
+            g_cams[camIdx].width = w;
+            g_cams[camIdx].height = h;
+        }
+    }
+
+    // Frame callback: create display on first frame, show subsequent frames
+    DisplayWindow* display = nullptr;
+    FrameCallback cb = [&](uint8_t* y, uint8_t* uv, int cw, int ch,
+                           int sy, int suv, int64_t pts) {
+        if (!g_running) return;
+        if (!display) {
+            display = new DisplayWindow();
+            if (!display->open("Camera " + std::to_string(camIdx) + " - " + url,
+                               cw, ch)) {
+                delete display;
+                display = nullptr;
+                return;
+            }
+        }
+        display->showFrame(y, uv, cw, ch, sy, suv);
+    };
+
+    // Select decoder based on codec type
+    // H.264/H.265 → try NvV4l2Decoder (hardware), fallback to SwDecoder (software)
+    // MJPEG → PipeDecoder
+    std::unique_ptr<SwDecoder> swDec;
+    std::unique_ptr<NvV4l2Decoder> nvDec;
+    std::unique_ptr<PipeDecoder> pipeDec;
+
+    if (codecId == AV_CODEC_ID_MJPEG) {
+        pipeDec = std::make_unique<PipeDecoder>();
+        if (pipeDec->open(url, w, h)) {
+            pipeDec->setFrameCallback(cb);
+            logWrite("INFO", url, "Using PipeDecoder (MJPEG)");
+        } else {
+            logWrite("ERROR", url, "Failed to open PipeDecoder");
+            pipeDec.reset();
+        }
+    } else {
+        // Try hardware V4L2 decoder first
+        nvDec = std::make_unique<NvV4l2Decoder>();
+        if (nvDec->open(codecId, w, h)) {
+            nvDec->setFrameCallback(cb);
+            logWrite("INFO", url, "Using NvV4l2Decoder (hardware)");
+        } else {
+            nvDec.reset();
+            // Fallback to software FFmpeg decoder
+            swDec = std::make_unique<SwDecoder>();
+            if (swDec->open(codecId, reader.extradata(),
+                            reader.extradataSize(), w, h)) {
+                swDec->setFrameCallback(cb);
+                logWrite("INFO", url, "Using SwDecoder (software fallback)");
+            } else {
+                logWrite("ERROR", url, "Failed to open any decoder");
+                swDec.reset();
+            }
+        }
+    }
+
+    // Verify at least one decoder is active
+    bool haveDecoder = (swDec && swDec->isOpen()) ||
+                       (nvDec && nvDec->isOpen()) ||
+                       (pipeDec && pipeDec->isOpen());
+    if (!haveDecoder) {
+        logWrite("ERROR", url, "No decoder available");
+        setCamConnected(camIdx, false, url);
+        if (camIdx >= 0 && camIdx < (int)g_camRunning.size())
+            *g_camRunning[camIdx] = false;
+        if (display) { delete display; display = nullptr; }
+        reader.close();
+        return;
+    }
+
+    setCamConnected(camIdx, true, url);
+    logWrite("INFO", url, "Camera connected");
+
+    uint64_t frameCount = 0;
+    uint64_t lastFpsPrint = 0;
+    auto lastFpsTime = std::chrono::steady_clock::now();
+    uint64_t lastDecodeTime = 0;
+
+    // Decode loop: read packets, feed decoder, track FPS
+    while (g_running &&
+           (camIdx < 0 || camIdx >= (int)g_camRunning.size() ||
+            *g_camRunning[camIdx])) {
+        uint8_t* pktData;
+        int pktSize;
+        int64_t pts;
+        bool isKeyFrame;
+
+        if (!reader.readPacket(pktData, pktSize, pts, isKeyFrame)) {
+            // Read failure — may need reconnection
+            logWrite("WARN", url, "Read error, attempting reconnect...");
+            reader.close();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+
+            if (!reader.open(url, 10)) {
+                logWrite("ERROR", url, "Reconnect failed");
+                break; // will set disconnected, clean up, and exit thread
+            }
+
+            // Re-init decoder after reconnection
+            if (codecId != AV_CODEC_ID_MJPEG) {
+                if (nvDec && nvDec->isOpen()) {
+                    nvDec->close();
+                    if (!nvDec->open(codecId, reader.width(), reader.height())) {
+                        nvDec.reset();
+                    }
+                }
+                if (!nvDec && swDec) {
+                    swDec->close();
+                    if (!swDec->open(codecId, reader.extradata(),
+                                     reader.extradataSize(),
+                                     reader.width(), reader.height())) {
+                        swDec.reset();
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Feed packets to the active decoder
+        bool decoded = false;
+        if (nvDec && nvDec->isOpen()) {
+            decoded = nvDec->decode(pktData, pktSize, pts);
+        } else if (swDec && swDec->isOpen()) {
+            decoded = swDec->decode(pktData, pktSize, pts, isKeyFrame);
+        } else if (pipeDec && pipeDec->isOpen()) {
+            decoded = pipeDec->decode(pktData, pktSize, pts);
+        }
+
+        if (decoded) {
+            frameCount++;
+            lastDecodeTime = frameCount;
+
+            // FPS counter: log every 100 frames
+            if (frameCount - lastFpsPrint >= 100) {
+                auto now = std::chrono::steady_clock::now();
+                double elapsed = std::chrono::duration<double>(now - lastFpsTime).count();
+                if (elapsed > 0) fps = 100.0 / elapsed;
+                lastFpsPrint = frameCount;
+                lastFpsTime = now;
+
+                {
+                    std::lock_guard<std::mutex> lock(g_camMtx);
+                    if (camIdx >= 0 && camIdx < (int)g_cams.size())
+                        g_cams[camIdx].fps = fps;
+                }
+                logWrite("INFO", url, "FPS: " + std::to_string(fps));
+            }
+        }
+
+        // Check for stuck decoder — if too many frames fail, break
+        if (frameCount - lastDecodeTime > 300) {
+            logWrite("WARN", url, "Too many failed decode attempts, reconnecting...");
+            reader.close();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (reader.open(url, 10)) {
+                lastDecodeTime = frameCount;
+            } else {
+                logWrite("ERROR", url, "Reconnect failed");
+                break;
+            }
+        }
+    }
+
+    logWrite("INFO", url, "Camera thread shutting down");
+    setCamConnected(camIdx, false, url);
+    if (display) { delete display; display = nullptr; }
+    reader.close();
+    if (camIdx >= 0 && camIdx < (int)g_camRunning.size())
+        *g_camRunning[camIdx] = false;
+}
+
+// Check if data starts with a valid NAL start code (0x00000001 or 0x000001).
+bool isValidNalUnit(const uint8_t* data, size_t size) {
+    if (!data || size < 4) return false;
+    if (data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) return true;
+    if (size >= 3 && data[0] == 0 && data[1] == 0 && data[2] == 1) return true;
+    return false;
+}
+
+// Scan buffer for NAL unit boundaries. Returns pairs of (pointer, size).
+int findNalUnits(const uint8_t* data, size_t size,
+                 std::vector<std::pair<const uint8_t*, int>>& nals) {
+    nals.clear();
+    if (!data || size < 4) return 0;
+
+    size_t start = 0;
+    bool found = false;
+
+    for (size_t i = 0; i + 3 < size; i++) {
+        if ((data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1) ||
+            (data[i] == 0 && data[i+1] == 0 && data[i+2] == 1)) {
+            int nalSize = (data[i+2] == 1) ? 3 : 4;
+            if (found) {
+                nals.push_back({data + start, (int)(i - start)});
+            }
+            start = i;
+            found = true;
+            // Skip past start code to avoid re-matching
+            i += (nalSize - 1);
+        }
+    }
+
+    if (found) {
+        nals.push_back({data + start, (int)(size - start)});
+    }
+
+    return (int)nals.size();
 }
