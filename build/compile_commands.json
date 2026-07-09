@@ -1,0 +1,37 @@
+[
+{
+  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/main.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/main.cpp\"",
+  "file": "/home/vitalyvaryvdin/Jetson Multimedia/main.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/func.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/func.cpp\"",
+  "file": "/home/vitalyvaryvdin/Jetson Multimedia/func.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/RtspReader.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/RtspReader.cpp\"",
+  "file": "/home/vitalyvaryvdin/Jetson Multimedia/RtspReader.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/SwDecoder.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/SwDecoder.cpp\"",
+  "file": "/home/vitalyvaryvdin/Jetson Multimedia/SwDecoder.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/NvV4l2Decoder.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/NvV4l2Decoder.cpp\"",
+  "file": "/home/vitalyvaryvdin/Jetson Multimedia/NvV4l2Decoder.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/PipeDecoder.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/PipeDecoder.cpp\"",
+  "file": "/home/vitalyvaryvdin/Jetson Multimedia/PipeDecoder.cpp"
+},
+{
+  "directory": "/home/vitalyvaryvdin/Jetson Multimedia/build",
+  "command": "/usr/bin/c++ -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -D__linux__ -I/usr/src/jetson_multimedia_api/include -isystem /usr/include/opencv4 -std=gnu++11 -o CMakeFiles/rtsp_decoder.dir/Display.cpp.o -c \"/home/vitalyvaryvdin/Jetson Multimedia/Display.cpp\"",
+  "file": "/home/vitalyvaryvdin/Jetson Multimedia/Display.cpp"
+}
+]

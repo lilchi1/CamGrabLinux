@@ -1,0 +1,3 @@
+/home/vitalyvaryvdin/Jetson Multimedia/build/CMakeFiles/rtsp_decoder.dir
+/home/vitalyvaryvdin/Jetson Multimedia/build/CMakeFiles/edit_cache.dir
+/home/vitalyvaryvdin/Jetson Multimedia/build/CMakeFiles/rebuild_cache.dir

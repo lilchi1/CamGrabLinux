@@ -1,0 +1,23 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/rtsp_decoder.dir/Display.cpp.o"
+  "CMakeFiles/rtsp_decoder.dir/Display.cpp.o.d"
+  "CMakeFiles/rtsp_decoder.dir/NvV4l2Decoder.cpp.o"
+  "CMakeFiles/rtsp_decoder.dir/NvV4l2Decoder.cpp.o.d"
+  "CMakeFiles/rtsp_decoder.dir/PipeDecoder.cpp.o"
+  "CMakeFiles/rtsp_decoder.dir/PipeDecoder.cpp.o.d"
+  "CMakeFiles/rtsp_decoder.dir/RtspReader.cpp.o"
+  "CMakeFiles/rtsp_decoder.dir/RtspReader.cpp.o.d"
+  "CMakeFiles/rtsp_decoder.dir/SwDecoder.cpp.o"
+  "CMakeFiles/rtsp_decoder.dir/SwDecoder.cpp.o.d"
+  "CMakeFiles/rtsp_decoder.dir/func.cpp.o"
+  "CMakeFiles/rtsp_decoder.dir/func.cpp.o.d"
+  "CMakeFiles/rtsp_decoder.dir/main.cpp.o"
+  "CMakeFiles/rtsp_decoder.dir/main.cpp.o.d"
+  "rtsp_decoder"
+  "rtsp_decoder.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/rtsp_decoder.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()
