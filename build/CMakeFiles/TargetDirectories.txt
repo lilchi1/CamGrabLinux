@@ -1,3 +1,0 @@
-/home/vitalyvaryvdin/Jetson/CamGrabLinux/build/CMakeFiles/rtsp_decoder.dir
-/home/vitalyvaryvdin/Jetson/CamGrabLinux/build/CMakeFiles/edit_cache.dir
-/home/vitalyvaryvdin/Jetson/CamGrabLinux/build/CMakeFiles/rebuild_cache.dir

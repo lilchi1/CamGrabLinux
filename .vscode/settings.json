@@ -1,6 +1,0 @@
-{
-    "C_Cpp.intelliSenseEngine": "Disabled",
-    "clangd.arguments": [
-        "--compile-commands-dir=${workspaceFolder}"
-    ]
-}
