@@ -236,21 +236,50 @@ bool GstDecoder::open(int codecId) {
         return false;
     }
 
-    // Настройка appsrc: live-поток, время в мкс, стримовый тип
+    // ─── Минимальная буферизация для appsrc ──────────────────────────────
     g_object_set(m_appsrc,
                  "format", GST_FORMAT_TIME,
                  "stream-type", GST_APP_STREAM_TYPE_STREAM,
                  "is-live", TRUE,
+                 "block", FALSE,
+                 "do-timestamp", FALSE,
+                 "max-bytes", 1024 * 1024,  // 1 МБ
                  NULL);
     GstCaps* srcCaps = gst_caps_from_string(srcCapsStr);
     gst_app_src_set_caps(GST_APP_SRC(m_appsrc), srcCaps);
     gst_caps_unref(srcCaps);
 
-    // Настройка appsink: NV12 в системной памяти (nvvidconv копирует из NVMM)
+    // ─── Минимальная буферизация для парсера ──────────────────────────────
+    g_object_set(parse,
+                 "disable-passthrough", FALSE,
+                 "fast", TRUE,
+                 NULL);
+
+    // ─── Минимальная буферизация для декодера NVDEC ──────────────────────
+    g_object_set(dec,
+                 "low-latency", TRUE,
+                 "drop-frame", TRUE,
+                 "num-extra-surfaces", 0,
+                 "output-io-mode", 4,  // DMABUF
+                 NULL);
+
+    // ─── Минимальная буферизация для nvvidconv ──────────────────────────────
+    g_object_set(conv,
+                 "nvbuf-memory-type", 0,  // Системная память на выходе
+                 NULL);
+
+    // ─── Настройка капсфильтра для NV12 ────────────────────────────────────
     GstCaps* sinkCaps = gst_caps_from_string("video/x-raw, format=(string)NV12");
     g_object_set(capsf, "caps", sinkCaps, NULL);
     gst_caps_unref(sinkCaps);
-    g_object_set(m_appsink, "emit-signals", TRUE, "sync", FALSE, "drop", FALSE, NULL);
+
+    // ─── Минимальная буферизация для appsink ──────────────────────────────
+    g_object_set(m_appsink, 
+                 "emit-signals", TRUE, 
+                 "sync", FALSE,
+                 "drop", TRUE,
+                 "max-buffers", 1,
+                 NULL);
     g_signal_connect(m_appsink, "new-sample", G_CALLBACK(onNewSample), this);
 
     // Сборка пайплайна
@@ -286,20 +315,6 @@ bool GstDecoder::open(int codecId) {
         m_probeSink = gst_pad_add_probe(m_sinkPad, GST_PAD_PROBE_TYPE_BUFFER,
                                         onTsProbe, this, nullptr);
 
-    // Замер заявленной GStreamer'ом задержки пайплайна
-    GstQuery* latQuery = gst_query_new_latency();
-    if (gst_element_query(m_pipeline, latQuery)) {
-        gboolean isLive = FALSE;
-        GstClockTime minLat = 0, maxLat = 0;
-        gst_query_parse_latency(latQuery, &isLive, &minLat, &maxLat);
-        fprintf(stderr, "[GstDecoder] LATENCY: live=%d min=%" G_GUINT64_FORMAT
-                        " us max=%" G_GUINT64_FORMAT " us\n",
-                isLive, minLat, maxLat);
-    } else {
-        fprintf(stderr, "[GstDecoder] LATENCY: query не поддерживается\n");
-    }
-    gst_query_unref(latQuery);
-
     // Запуск пайплайна
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -308,7 +323,7 @@ bool GstDecoder::open(int codecId) {
         return false;
     }
 
-    fprintf(stderr, "[GstDecoder] пайплайн запущен (codecId=%d)\n", codecId);
+    fprintf(stderr, "[GstDecoder] пайплайн запущен (codecId=%d) в режиме low-latency\n", codecId);
     return true;
 }
 

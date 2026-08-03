@@ -46,7 +46,8 @@ DisplayWindow::DisplayWindow()
       m_image(nullptr), m_visual(nullptr), m_depth(0),
       m_width(0), m_height(0),
       m_cuda(nullptr), m_cudaReady(false),
-      m_bpp(0), m_useShm(false) {
+      m_bpp(0), m_useShm(false),
+      m_frameCounter(0) {
     memset(&m_shmInfo, 0, sizeof(m_shmInfo));
 }
 
@@ -271,43 +272,58 @@ bool DisplayWindow::popKeyEvent(int& keysym, bool& pressed) {
 void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
                               int srcW, int srcH,
                               int strideY, int strideUV) {
-    std::lock_guard<std::mutex> lock(m_xMtx);
     if (!m_image || !m_image->data || !m_cudaReady || !m_cuda) return;
 
-    // Масштабирование с сохранением пропорций
+    // Масштабирование с сохранением пропорций (вычисляем без блокировки)
     double scale = std::min((double)m_width / srcW, (double)m_height / srcH);
     int outW = (int)(srcW * scale + 0.5);
     int outH = (int)(srcH * scale + 0.5);
     int offX = (m_width  - outW) / 2;
     int offY = (m_height - outH) / 2;
 
-    // CUDA: масштабирование + конвертация NV12→BGRA на GPU
+    // CUDA: масштабирование + конвертация NV12→BGRA на GPU (без блокировки X)
     int outStride = 0;
     uint8_t* bgra = m_cuda->process(yPlane, uvPlane, strideY, strideUV,
                                     srcW, srcH, outW, outH, outStride);
     if (!bgra) return;
 
-    // Заполнение чёрным (letterbox/pillarbox)
-    memset(m_image->data, 0,
-           static_cast<size_t>(m_height) * (size_t)m_image->bytes_per_line);
+    // ─── Критическая секция: только копирование в XImage и вывод ──────────
+    {
+        std::lock_guard<std::mutex> lock(m_xMtx);
+        
+        // Проверка, что окно не изменилось во время CUDA-обработки
+        if (!m_image || !m_image->data) return;
 
-    // Копирование BGRA данных в XImage построчно
-    for (int y = 0; y < outH; y++) {
-        int dstRow = offY + y;
-        if (dstRow >= m_height) break;
-        const uint8_t* srcRow = bgra + y * outStride;
-        char* dstRowPtr = m_image->data + dstRow * m_image->bytes_per_line
-                          + offX * m_bpp;
-        memcpy(dstRowPtr, srcRow, outW * 4);
-    }
+        // Заполнение чёрным (letterbox/pillarbox)
+        memset(m_image->data, 0,
+               static_cast<size_t>(m_height) * (size_t)m_image->bytes_per_line);
 
-    // Вывод кадра в окно: MIT-SHM (zero-copy) или обычный XPutImage
-    if (m_useShm)
-        pXShmPutImage(m_display, m_window, m_gc, m_image,
+        // Копирование BGRA данных в XImage построчно
+        for (int y = 0; y < outH; y++) {
+            int dstRow = offY + y;
+            if (dstRow >= m_height) break;
+            const uint8_t* srcRow = bgra + y * outStride;
+            char* dstRowPtr = m_image->data + dstRow * m_image->bytes_per_line
+                              + offX * m_bpp;
+            memcpy(dstRowPtr, srcRow, outW * 4);
+        }
+
+        // Вывод кадра в окно: MIT-SHM (zero-copy) или обычный XPutImage
+        if (m_useShm)
+            pXShmPutImage(m_display, m_window, m_gc, m_image,
+                          0, 0, 0, 0, static_cast<unsigned>(m_width),
+                          static_cast<unsigned>(m_height), False);
+        else
+            XPutImage(m_display, m_window, m_gc, m_image,
                       0, 0, 0, 0, static_cast<unsigned>(m_width),
-                      static_cast<unsigned>(m_height), False);
-    else
-        XPutImage(m_display, m_window, m_gc, m_image,
-                  0, 0, 0, 0, static_cast<unsigned>(m_width),
-                  static_cast<unsigned>(m_height));
+                      static_cast<unsigned>(m_height));
+        
+        m_frameCounter++;
+        
+        // Периодический flush для синхронизации (каждые 10 кадров)
+        if (m_frameCounter % 10 == 0) {
+            XFlush(m_display);
+        }
+    }
+    // ─── Конец критической секции ──────────────────────────────────────────
 }

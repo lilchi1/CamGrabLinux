@@ -62,7 +62,9 @@ private:
     std::mutex m_keyMtx;                         // Защита очереди клавиш
     std::deque<std::pair<int, bool>> m_keyEvents; // Очередь клавиш (keysym, нажата)
 
-    std::mutex m_xMtx;   // Сериализация доступа к X11-коннекту и окну (потоки appsink/камеры)
+    std::mutex m_xMtx;   // Сериализация доступа к X11-коннекту и окну (только для вывода)
+    
+    int m_frameCounter;  // Счётчик кадров для периодического XFlush
 
     void allocateImage(int width, int height);  // Выделение XImage (SHM или обычный)
     void destroyImage();                         // Уничтожение XImage и SHM

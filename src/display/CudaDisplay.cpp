@@ -112,8 +112,6 @@ uint8_t* CudaDisplay::process(const uint8_t* yPlane, const uint8_t* uvPlane,
                                int& outStride) {
     if (!m_ready || !yPlane || !uvPlane) return nullptr;
 
-    (void)srcStrideUV; // UV stride == Y stride в V4L2 NV12
-
     int bgrStride = dstW * 4;  // BGRA: 4 байта на пиксель
     if (!reallocDev(srcW * srcH, srcW * (srcH / 2), bgrStride, dstH))
         return nullptr;
@@ -135,9 +133,19 @@ uint8_t* CudaDisplay::process(const uint8_t* yPlane, const uint8_t* uvPlane,
         return nullptr;
     }
 
-    // Копирование UV-плоскости
-    err = cudaMemcpyAsync(d_uv, uvPlane, srcW * (srcH / 2),
-                          cudaMemcpyHostToDevice, m_stream);
+    // Копирование UV-плоскости (с учётом stride)
+    int uvH = srcH / 2;
+    if (srcStrideUV == srcW) {
+        err = cudaMemcpyAsync(d_uv, uvPlane, (size_t)srcW * uvH,
+                              cudaMemcpyHostToDevice, m_stream);
+    } else {
+        for (int row = 0; row < uvH; row++) {
+            err = cudaMemcpyAsync(d_uv + (size_t)row * srcW,
+                                  uvPlane + (size_t)row * srcStrideUV,
+                                  srcW, cudaMemcpyHostToDevice, m_stream);
+            if (err != cudaSuccess) break;
+        }
+    }
     if (err != cudaSuccess) {
         fprintf(stderr, "[CUDA] cudaMemcpy UV ошибка: %s\n", cudaGetErrorString(err));
         return nullptr;

@@ -2,9 +2,13 @@
 #include "headers.h"
 #include <poll.h>
 #include <unistd.h>
+#include <getopt.h>
 
 // Глобальный флаг работы программы (атомарный для безопасного доступа из потоков)
 volatile std::sig_atomic_t g_running = 1;
+
+// Флаги режимов работы
+bool g_benchmarkMode = false;      // Режим бенчмарка (без отображения)
 
 // Обработчик сигналов SIGINT/SIGTERM — корректное завершение
 static void signalHandler(int) {
@@ -40,24 +44,61 @@ static bool readLineAsync(std::string& out, int timeoutMs) {
     return false;
 }
 
-int main() {
+// Печать справки
+static void printUsage(const char* progname) {
+    std::cout << "Использование: " << progname << " [опции]" << std::endl;
+    std::cout << "Опции:" << std::endl;
+    std::cout << "  -b, --benchmark    Режим бенчмарка (без отображения окна)" << std::endl;
+    std::cout << "  -h, --help         Показать эту справку" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Примеры:" << std::endl;
+    std::cout << "  " << progname << "                      # Обычный режим с отображением" << std::endl;
+    std::cout << "  " << progname << " -b                  # Режим бенчмарка (без окна)" << std::endl;
+    std::cout << "  " << progname << " --benchmark         # Бенчмарк с логированием" << std::endl;
+}
+
+int main(int argc, char* argv[]) {
     // Регистрация обработчиков сигналов
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+
+    // ─── Разбор аргументов командной строки ──────────────────────────────────
+    static struct option long_options[] = {
+        {"benchmark", no_argument, 0, 'b'},
+        {"help",      no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "bh", long_options, nullptr)) != -1) {
+        switch (opt) {
+            case 'b':
+                g_benchmarkMode = true;
+                break;
+            case 'h':
+                printUsage(argv[0]);
+                return 0;
+            default:
+                printUsage(argv[0]);
+                return 1;
+        }
+    }
 
     std::cout << "===========================================" << std::endl;
     std::cout << "     Jetson RTSP Decoder" << std::endl;
     std::cout << "     NVDEC + CUDA + X11" << std::endl;
     std::cout << "===========================================" << std::endl;
 
-    std::cout << "Логировать скорость декодирования (decode_ms) в консоль и JSON? [y/N]: ";
-    std::string logAnswer;
-    std::getline(std::cin, logAnswer);
-    logAnswer.erase(std::remove_if(logAnswer.begin(), logAnswer.end(), ::isspace), logAnswer.end());
-    std::string a = logAnswer;
-    for (auto& c : a) c = (char)tolower((unsigned char)c);
-    g_logDecodeSpeed.store(a == "y" || a == "yes" || a == "д" || a == "да" ||
-                           a == "Д" || a == "Да");
+    if (g_benchmarkMode) {
+        std::cout << "🔬 РЕЖИМ БЕНЧМАРКА (отображение ОТКЛЮЧЕНО)" << std::endl;
+    } else {
+        std::cout << "🖥️  ОБЫЧНЫЙ РЕЖИМ (с отображением)" << std::endl;
+    }
+    std::cout << "📊 Логирование: ВКЛ (CSV)" << std::endl;
+    std::cout << std::endl;
+
+    // Включить логирование скорости декодирования (CSV) - всегда включено
+    g_logDecodeSpeed.store(true);
 
     std::cout << "Введите RTSP URL (через запятую):" << std::endl;
     std::cout << "  Пример: rtsp://admin:pass@192.168.1.100:554/stream" << std::endl;
@@ -122,7 +163,8 @@ int main() {
                 if (opt != "1") break;
                 std::cout << "Введите RTSP URL: " << std::flush;
                 std::string newUrl;
-                if (!readLineAsync(newUrl, 400) || !g_running) break;
+                while (g_running && !readLineAsync(newUrl, 400)) {}
+                if (!g_running) break;
                 if (!newUrl.empty()) startCamera(newUrl);
             }
             continue;

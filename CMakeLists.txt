@@ -14,9 +14,15 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Detect Jetson GPU architecture (default to sm_72 for Xavier, sm_87 for Orin)
+# Detect Jetson GPU architecture (sm_72 for Xavier, sm_87 for Orin)
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 72)
+    execute_process(COMMAND nvidia-smi --query-gpu=name --format=csv,noheader
+                    OUTPUT_VARIABLE GPU_NAME ERROR_QUIET)
+    if(GPU_NAME MATCHES "Orin")
+        set(CMAKE_CUDA_ARCHITECTURES 87)
+    else()
+        set(CMAKE_CUDA_ARCHITECTURES 72)
+    endif()
 endif()
 
 # FFmpeg libraries
@@ -31,18 +37,21 @@ pkg_check_modules(GSTAPP     REQUIRED gstreamer-app-1.0)
 pkg_check_modules(GSTVIDEO   REQUIRED gstreamer-video-1.0)
 
 add_executable(rtsp_decoder
-    main.cpp
-    func.cpp
-    RtspReader.cpp
-    GstDecoder.cpp
+    src/main.cpp
+    src/core/Globals.cpp
+    src/core/Log.cpp
+    src/core/CameraThread.cpp
+    src/rtsp/RtspReader.cpp
+    src/decoder/GstDecoder.cpp
 
-    Display.cpp
-    CudaDisplay.cpp
-    CudaKernels.cu
-    PtzControl.cpp
+    src/display/Display.cpp
+    src/display/CudaDisplay.cpp
+    src/display/CudaKernels.cu
+    src/ptz/PtzControl.cpp
 )
 
 target_include_directories(rtsp_decoder PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${LIBAVFORMAT_INCLUDE_DIRS}
     ${LIBAVCODEC_INCLUDE_DIRS}
     ${LIBAVUTIL_INCLUDE_DIRS}

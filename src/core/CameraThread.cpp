@@ -1,89 +1,9 @@
-// func.cpp — Глобальные переменные, утилиты, поток камеры (GStreamer nvv4l2decoder).
+// CameraThread.cpp — Поток камеры: RTSP → декодирование (nvv4l2decoder) → отображение.
 #include "headers.h"
 #include "Display.h"
+#include <X11/keysym.h>
 
-// ─── Глобальные данные ───────────────────────────────────────────────────────
-
-std::vector<CamInfo> g_cams;                      // Информация о всех камерах
-std::vector<std::atomic<bool>*> g_camRunning;     // Флаги работы каждого потока камеры
-std::mutex g_camMtx;    // Защита g_cams / g_camRunning
-std::mutex g_printMtx;  // Сериализация вывода в stdout
-std::atomic<bool> g_logDecodeSpeed{true};   // Логировать скорость декодирования (по умолчанию ВКЛ)
-
-// Глобальный флаг работы (объявлен в main.cpp)
-extern volatile std::sig_atomic_t g_running;
-extern bool g_benchmarkMode;  // Режим бенчмарка
-
-// ─── Вспомогательные функции ─────────────────────────────────────────────────
-
-// Получение текущего времени в формате "YYYY-MM-DD HH:MM:SS"
-static std::string getCurrentTimestamp() {
-    time_t now = time(nullptr);
-    struct tm* tm = localtime(&now);
-    char buf[32];
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm);
-    return std::string(buf);
-}
-
-// Потокобезопасная проверка: работает ли поток камеры
-static bool isCamRunning(int camIdx) {
-    std::lock_guard<std::mutex> lock(g_camMtx);
-    if (camIdx < 0 || (size_t)camIdx >= g_camRunning.size()) return false;
-    return *g_camRunning[(size_t)camIdx];
-}
-
-// Потокобезопасная остановка потока камеры
-static void stopCamRunning(int camIdx) {
-    std::lock_guard<std::mutex> lock(g_camMtx);
-    if (camIdx >= 0 && (size_t)camIdx < g_camRunning.size())
-        *g_camRunning[(size_t)camIdx] = false;
-}
-
-// Потокобезопасный вывод лога с временем [HH:MM:SS][УРОВЕНЬ][URL] сообщение
-void logWrite(const std::string& level, const std::string& url,
-              const std::string& msg) {
-    std::lock_guard<std::mutex> lock(g_printMtx);
-    time_t now = time(nullptr);
-    struct tm* tm = localtime(&now);
-    char tbuf[32];
-    strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm);
-    std::cout << "[" << tbuf << "][" << level << "][" << url << "] "
-              << msg << std::endl;
-}
-
-// Вывод статуса всех камер в консоль
-void printAllStatus() {
-    std::lock_guard<std::mutex> lock(g_camMtx);
-    std::lock_guard<std::mutex> lock2(g_printMtx);
-    std::cout << "\n=== Статус камер ===" << std::endl;
-    for (size_t i = 0; i < g_cams.size(); i++) {
-        auto& c = g_cams[i];
-        std::string codecStr;
-        if (c.codec == AV_CODEC_ID_H264) codecStr = "H.264";
-        else if (c.codec == AV_CODEC_ID_H265) codecStr = "H.265";
-        else if (c.codec == AV_CODEC_ID_MJPEG) codecStr = "MJPEG";
-        else codecStr = "Unknown";
-        std::cout << "[" << i << "] " << c.url
-                  << " | " << codecStr
-                  << " | " << c.width << "x" << c.height
-                  << " | " << (c.fps > 0 ? std::to_string(c.fps) : "N/A") << " fps"
-                  << " | " << (c.connected ? "Подключена" : "Отключена")
-                  << std::endl;
-    }
-    std::cout << "=====================\n" << std::endl;
-}
-
-// Установка статуса подключения камеры
-void setCamConnected(int camIdx, bool connected, const std::string& url) {
-    (void)url;
-    std::lock_guard<std::mutex> lock(g_camMtx);
-    if (camIdx >= 0 && static_cast<size_t>(camIdx) < g_cams.size()) {
-        g_cams[(size_t)camIdx].connected = connected;
-    }
-}
-
-// ─── Главный поток камеры: RTSP → декодирование → отображение ───────────────
-
+// Главный поток камеры: RTSP → декодирование → отображение
 void cameraThread(std::string url, int camIdx) {
     logWrite("INFO", url, "Поток камеры запущен");
 
@@ -137,20 +57,14 @@ void cameraThread(std::string url, int camIdx) {
         return;
     }
 
-    // ─── Создание окна отображения (только если не бенчмарк-режим) ──────────
-    DisplayWindow* display = nullptr;
-    if (!g_benchmarkMode) {
-        display = new DisplayWindow();
-        if (!display->open("Камера " + std::to_string(camIdx) + " - " + url, 1600, 900)) {
-            delete display;
-            display = nullptr;
-            logWrite("WARN", url, "Не удалось открыть окно (продолжаем без отображения)");
-        }
-    } else {
-        logWrite("INFO", url, "Бенчмарк-режим: окно отображения не создаётся");
+    // Создание окна отображения (1600x900, чёрное до первого кадра)
+    DisplayWindow* display = new DisplayWindow();
+    if (!display->open("Камера " + std::to_string(camIdx) + " - " + url, 1600, 900)) {
+        delete display;
+        display = nullptr;
     }
 
-    // ─── Управление поворотной камерой (PTZ) — только если есть окно ────────
+    // Управление поворотной камерой (PTZ): стрелки, если камера поддерживает ISAPI
     std::unique_ptr<PtzControl> ptz;
     if (display) {
         ptz = std::make_unique<PtzControl>();
@@ -160,7 +74,7 @@ void cameraThread(std::string url, int camIdx) {
             logWrite("WARN", url, "PTZ недоступен (стрелки неактивны)");
     }
 
-    // ─── CSV-файл с детальной статистикой декодирования ──────────────────────
+    // CSV-файл с детальной статистикой декодирования
     std::ofstream csvFile;
     if (camIdx >= 0 && g_logDecodeSpeed) {
         csvFile.open("decode_times_" + std::to_string(camIdx) + ".csv");
@@ -176,14 +90,14 @@ void cameraThread(std::string url, int camIdx) {
         }
     }
 
-    // ─── Счётчики для FPS и статистики ──────────────────────────────────────
+    // Счётчики для FPS и статистики (обновляются из gst-потока appsink)
     uint64_t frameCount = 0;
     uint64_t lastFpsPrint = 0;
     auto lastFpsTime = std::chrono::steady_clock::now();
     double fps = 0.0;
     std::mutex statsMtx;
 
-    // ─── Колбэк кадра: декодер отдаёт NV12 → CUDA конвертирует → X11 показывает ──
+    // Колбэк кадра: декодер отдаёт NV12 → CUDA конвертирует → X11 показывает
     FrameCallback cb = [&](uint8_t* y, uint8_t* uv, int cw, int ch,
                            int sy, int suv, int64_t pts) {
         (void)pts;
@@ -192,7 +106,7 @@ void cameraThread(std::string url, int camIdx) {
     };
     if (gstDec && gstDec->isOpen()) gstDec->setFrameCallback(cb);
 
-    // ─── Колбэк статистики декодирования: запись в CSV и сводка в терминал ──
+    // Колбэк статистики декодирования: запись в CSV и сводка в терминал
     double sumTotal = 0, sumPush = 0, sumA2D = 0, sumD2C = 0, sumC2S = 0, sumFI = 0, sumDisp = 0;
     uint64_t cntStats = 0;
     
@@ -279,7 +193,7 @@ void cameraThread(std::string url, int camIdx) {
 
     // ─── Главный цикл: чтение RTSP → отправка пакетов в декодер ──────────
     while (g_running && isCamRunning(camIdx)) {
-        // ─── Обработка клавиатуры: только если есть окно ──────────────────
+        // Обработка клавиатуры: ESC — выход, стрелки — PTZ (поворот камеры)
         if (display) {
             display->pollEvents();
             int ks;
@@ -302,7 +216,7 @@ void cameraThread(std::string url, int camIdx) {
             }
         }
 
-        // ─── Перезапуск конвейера при ошибке ──────────────────────────────
+        // Перезапуск конвейера при ошибке
         if (gstDec && gstDec->failed()) {
             logWrite("WARN", url, "Ошибка GStreamer-конвейера, перезапуск декодера...");
             gstDec->close();
@@ -316,7 +230,7 @@ void cameraThread(std::string url, int camIdx) {
         int pktSize;
         int64_t pts;
 
-        // ─── Чтение пакета из RTSP потока ──────────────────────────────────
+        // Чтение пакета из RTSP потока
         if (!reader.readPacket(pktData, pktSize, pts)) {
             // Ошибка чтения — попытка переподключения
             logWrite("WARN", url, "Ошибка чтения, попытка переподключения...");
@@ -350,12 +264,12 @@ void cameraThread(std::string url, int camIdx) {
             continue;
         }
 
-        // ─── Отправка пакета в аппаратный декодер NVDEC ────────────────────
+        // Отправка пакета в аппаратный декодер NVDEC
         if (gstDec && gstDec->isOpen())
             gstDec->pushPacket(pktData, pktSize, pts);
     }  // while (g_running && ...)
 
-    // ─── Освобождение ресурсов ──────────────────────────────────────────────
+    // Освобождение ресурсов: сначала остановить gst-поток, затем файлы/окно
     logWrite("INFO", url, "Поток камеры завершается");
     setCamConnected(camIdx, false, url);
     if (gstDec) gstDec->close();
