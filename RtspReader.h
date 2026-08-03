@@ -1,5 +1,4 @@
-// RtspReader — opens an RTSP stream via FFmpeg, reads H.264/H.265 packets,
-// applies Annex-B bitstream filter, and exposes raw NAL data.
+// RtspReader.h — Чтение RTSP потока через FFmpeg, H.264/H.265 пакеты с Annex-B фильтрацией.
 #pragma once
 
 #include <cstdint>
@@ -18,30 +17,27 @@ public:
     RtspReader();
     ~RtspReader();
 
+    // Открытие RTSP потока с таймаутом (секунды)
     bool open(const std::string& url, int timeoutSec = 10);
+
+    // Закрытие потока
     void close();
 
-    // Reads one video packet. data/size/pts/isKeyFrame are valid on success.
-    bool readPacket(uint8_t*& data, int& size, int64_t& pts, bool& isKeyFrame);
-    int videoStreamIndex() const { return m_videoStreamIdx; }
+    // Чтение одного видеопакета. data/size/pts валидны при успехе.
+    bool readPacket(uint8_t*& data, int& size, int64_t& pts);
 
+    // Доступ к метаданным потока
     int codecId() const { return m_codecId; }
     int width() const { return m_width; }
     int height() const { return m_height; }
-    bool isOpen() const { return m_fmtCtx != nullptr; }
-
-    const uint8_t* extradata() const { return m_extradata; }
-    int extradataSize() const { return m_extradataSize; }
 
 private:
-    AVFormatContext* m_fmtCtx;
-    int m_videoStreamIdx;
-    int m_codecId;
-    int m_width;
-    int m_height;
-    AVPacket* m_pkt;
-    AVPacket* m_filteredPkt;       // output of bitstream filter
-    AVBSFContext* m_bsfCtx;        // h264_mp4toannexb / hevc_mp4toannexb
-    uint8_t* m_extradata;          // copy of codec extradata (SPS/PPS)
-    int m_extradataSize;
+    AVFormatContext* m_fmtCtx;       // Контекст формата FFmpeg
+    int m_videoStreamIdx;            // Индекс видеопотока
+    int m_codecId;                   // ID кодека (H.264, H.265)
+    int m_width;                     // Разрешение по ширине
+    int m_height;                    // Разрешение по высоте
+    AVPacket* m_pkt;                 // Буфер для чтения пакетов
+    AVPacket* m_filteredPkt;         // Выход битстрим-фильтра
+    AVBSFContext* m_bsfCtx;          // Контекст фильтра (h264_mp4toannexb / hevc_mp4toannexb)
 };

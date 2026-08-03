@@ -1,68 +1,88 @@
-// RtspReader implementation — FFmpeg AVFormatContext + bitstream filter.
+// RtspReader.cpp — Реализация чтения RTSP через FFmpeg AVFormatContext + битстрим-фильтр.
 #include "headers.h"
 
 RtspReader::RtspReader()
     : m_fmtCtx(nullptr), m_videoStreamIdx(-1), m_codecId(0),
       m_width(0), m_height(0), m_pkt(nullptr),
-      m_filteredPkt(nullptr), m_bsfCtx(nullptr),
-      m_extradata(nullptr), m_extradataSize(0) {}
+      m_filteredPkt(nullptr), m_bsfCtx(nullptr) {}
 
 RtspReader::~RtspReader() { close(); }
 
+// Открытие RTSP потока: подключение по UDP, поиск видеопотока
 bool RtspReader::open(const std::string& url, int timeoutSec) {
     close();
 
-    // Set network / RTSP transport to TCP (more reliable than UDP).
+    // Только UDP-транспорт RTSP
     AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "rtsp_transport", "tcp", 0);
+    av_dict_set(&opts, "rtsp_transport", "udp", 0);
     char tbuf[32];
     snprintf(tbuf, sizeof(tbuf), "%d", timeoutSec * 1000000);
     av_dict_set(&opts, "stimeout", tbuf, 0);
     av_dict_set(&opts, "fflags", "nobuffer", 0);
     av_dict_set(&opts, "flags", "low_delay", 0);
-    av_dict_set(&opts, "max_delay", "0", 0);
+    // Увеличенный сокетный буфер приёма (4 МБ) — меньше потерь RTP при
+    // кратковременной перегрузке сети. ВАЖНО: ядро обрезает SO_RCVBUF до
+    // net.core.rmem_max (по умолчанию 208 КБ!). Нужно выполнить:
+    //   sudo sysctl -w net.core.rmem_max=8388608
+    // иначе указанный buffer_size будет проигнорирован.
+    av_dict_set(&opts, "buffer_size", "4194304", 0);
+    // Умеренный max_delay вместо 0, чтобы не срабатывало
+    // "max delay reached need to consume packet" при переупорядочивании RTP
+    av_dict_set(&opts, "max_delay", "300000", 0);
     av_dict_set(&opts, "probesize", "5000000", 0);
     av_dict_set(&opts, "analyzeduration", "5000000", 0);
 
     m_fmtCtx = avformat_alloc_context();
     int ret = avformat_open_input(&m_fmtCtx, url.c_str(), nullptr, &opts);
     av_dict_free(&opts);
-    if (ret < 0) {
-        // Retry with UDP transport if TCP fails
-        av_dict_set(&opts, "rtsp_transport", "udp", 0);
-        ret = avformat_open_input(&m_fmtCtx, url.c_str(), nullptr, &opts);
-        av_dict_free(&opts);
-        if (ret < 0) { close(); return false; }
+    if (ret < 0) { close(); return false; }
+
+    // Самопроверка: если запрошенный сокетный буфер больше net.core.rmem_max,
+    // ядро обрежет его, и при бурсте I-кадра раз в секунду будут теряться
+    // RTP-пакеты (дублирование PTS каждые 25 кадров).
+    {
+        int rmemMax = -1;
+        FILE* f = fopen("/proc/sys/net/core/rmem_max", "r");
+        if (f) {
+            if (fscanf(f, "%d", &rmemMax) != 1) rmemMax = -1;
+            fclose(f);
+        }
+        if (rmemMax > 0 && rmemMax < 4194304) {
+            logWrite("WARN", url,
+                "Сокетный буфер UDP обрезан ядром: rmem_max=" +
+                std::to_string(rmemMax) +
+                " < buffer_size=4194304. Выполните: "
+                "sudo sysctl -w net.core.rmem_max=8388608 "
+                "(иначе потеря I-кадров и дублирование PTS каждые 25 кадров)");
+        }
     }
 
+    logWrite("INFO", url, "Транспорт RTSP: UDP");
+
+    // Получение информации о потоках
     ret = avformat_find_stream_info(m_fmtCtx, nullptr);
     if (ret < 0) { close(); return false; }
 
-    // Locate first video stream
+    // Поиск первого видеопотока
     for (unsigned i = 0; i < m_fmtCtx->nb_streams; i++) {
         if (m_fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            m_videoStreamIdx = i;
+            m_videoStreamIdx = static_cast<int>(i);
             break;
         }
     }
     if (m_videoStreamIdx < 0) { close(); return false; }
 
+    // Извлечение параметров кодека и разрешения
     auto* par = m_fmtCtx->streams[m_videoStreamIdx]->codecpar;
     m_codecId = par->codec_id;
     m_width  = par->width;
     m_height = par->height;
 
-    // Save extradata (contains SPS/PPS for h.264/h.265)
-    if (par->extradata && par->extradata_size > 0) {
-        m_extradata = (uint8_t*)av_malloc(par->extradata_size);
-        memcpy(m_extradata, par->extradata, par->extradata_size);
-        m_extradataSize = par->extradata_size;
-    }
-
+    // Выделение памяти для пакетов
     m_pkt = av_packet_alloc();
     m_filteredPkt = av_packet_alloc();
 
-    // Set up bitstream filter (mp4toannexb)
+    // Настройка битстрим-фильтра (mp4toannexb) для H.264/H.265
     const char* bsfName = nullptr;
     if (m_codecId == AV_CODEC_ID_H264) bsfName = "h264_mp4toannexb";
     else if (m_codecId == AV_CODEC_ID_H265) bsfName = "hevc_mp4toannexb";
@@ -79,28 +99,30 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
     return true;
 }
 
+// Закрытие потока и освобождение ресурсов FFmpeg
 void RtspReader::close() {
     if (m_bsfCtx) av_bsf_free(&m_bsfCtx);
     if (m_pkt) av_packet_free(&m_pkt);
     if (m_filteredPkt) av_packet_free(&m_filteredPkt);
     if (m_fmtCtx) avformat_close_input(&m_fmtCtx);
-    if (m_extradata) { av_free(m_extradata); m_extradata = nullptr; }
-    m_extradataSize = 0;
     m_videoStreamIdx = -1;
 }
 
+// Чтение одного видеопакета; пропуск аудио/других потоков, применение BSF
 bool RtspReader::readPacket(uint8_t*& data, int& size,
-                            int64_t& pts, bool& isKeyFrame) {
+                            int64_t& pts) {
     while (true) {
         int ret = av_read_frame(m_fmtCtx, m_pkt);
         if (ret < 0) return false;
+
+        // Пропуск пакетов не из видеопотока
         if (m_pkt->stream_index != m_videoStreamIdx) {
             av_packet_unref(m_pkt);
             continue;
         }
 
         AVPacket* outPkt = m_pkt;
-        // Apply bitstream filter if available
+        // Применение битстрим-фильтра (h264_mp4toannexb / hevc_mp4toannexb)
         if (m_bsfCtx) {
             if (av_bsf_send_packet(m_bsfCtx, m_pkt) < 0) {
                 av_packet_unref(m_pkt);
@@ -116,7 +138,6 @@ bool RtspReader::readPacket(uint8_t*& data, int& size,
         data = outPkt->data;
         size = outPkt->size;
         pts  = outPkt->pts;
-        isKeyFrame = (outPkt->flags & AV_PKT_FLAG_KEY);
         return true;
     }
 }

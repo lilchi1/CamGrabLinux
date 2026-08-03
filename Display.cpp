@@ -1,121 +1,313 @@
-// DisplayWindow implementation — X11 image + NV12→RGB manual conversion.
+// Display.cpp — X11 + MIT-SHM окно отображения. Конвертация NV12→BGRA и масштабирование на GPU (CUDA).
 #include "Display.h"
+#include "CudaDisplay.h"
 #include "headers.h"
+#include <X11/keysym.h>
+#include <dlfcn.h>
+#include <unistd.h>
+
+// Функции MIT-SHM загружаем через dlopen (избегаем жёсткой зависимости от libXext)
+typedef Bool (*XShmQueryExtFunc)(::Display*);
+typedef XImage* (*XShmCreateImageFunc)(::Display*, Visual*, unsigned int, int,
+                                        char*, void*, unsigned int, unsigned int);
+typedef Bool (*XShmAttachFunc)(::Display*, void*);
+typedef Bool (*XShmDetachFunc)(::Display*, void*);
+typedef int (*XShmPutImageFunc)(::Display*, Drawable, GC, XImage*,
+                                 int, int, int, int,
+                                 unsigned int, unsigned int, Bool);
+
+static void* xshmHandle = nullptr;
+static XShmQueryExtFunc pXShmQueryExtension = nullptr;
+static XShmCreateImageFunc pXShmCreateImage = nullptr;
+static XShmAttachFunc pXShmAttach = nullptr;
+static XShmDetachFunc pXShmDetach = nullptr;
+static XShmPutImageFunc pXShmPutImage = nullptr;
+
+// Загрузка MIT-SHM функций из libXext.so.6
+static bool loadXShm() {
+    if (xshmHandle) return pXShmQueryExtension != nullptr;
+    xshmHandle = dlopen("libXext.so.6", RTLD_LAZY | RTLD_LOCAL);
+    if (!xshmHandle) return false;
+    pXShmQueryExtension = (XShmQueryExtFunc)dlsym(xshmHandle, "XShmQueryExtension");
+    pXShmCreateImage = (XShmCreateImageFunc)dlsym(xshmHandle, "XShmCreateImage");
+    pXShmAttach = (XShmAttachFunc)dlsym(xshmHandle, "XShmAttach");
+    pXShmDetach = (XShmDetachFunc)dlsym(xshmHandle, "XShmDetach");
+    pXShmPutImage = (XShmPutImageFunc)dlsym(xshmHandle, "XShmPutImage");
+    if (!pXShmQueryExtension || !pXShmCreateImage || !pXShmAttach ||
+        !pXShmDetach || !pXShmPutImage) {
+        dlclose(xshmHandle); xshmHandle = nullptr;
+        return false;
+    }
+    return true;
+}
 
 DisplayWindow::DisplayWindow()
     : m_display(nullptr), m_window(0), m_gc(nullptr),
-      m_image(nullptr), m_width(0), m_height(0), m_rgbBuf(nullptr) {}
+      m_image(nullptr), m_visual(nullptr), m_depth(0),
+      m_width(0), m_height(0),
+      m_cuda(nullptr), m_cudaReady(false),
+      m_bpp(0), m_useShm(false) {
+    memset(&m_shmInfo, 0, sizeof(m_shmInfo));
+}
 
 DisplayWindow::~DisplayWindow() { close(); }
 
+// Открытие окна X11, создание XImage (SHM или обычный), инициализация CUDA
 bool DisplayWindow::open(const std::string& title, int width, int height) {
     close();
     m_width = width;
     m_height = height;
 
+    // Потокобезопасность Xlib: X-коннект используется и из appsink-потока
+    // (showFrame), и из потока камеры (pollEvents)
+    XInitThreads();
+
+    // Подключение к X-серверу
     m_display = XOpenDisplay(nullptr);
     if (!m_display) return false;
 
     int screen = DefaultScreen(m_display);
     Window root = RootWindow(m_display, screen);
 
+    // Создание окна
     m_window = XCreateSimpleWindow(m_display, root,
-                                   0, 0, width, height, 1,
+                                   0, 0, static_cast<unsigned>(width),
+                                   static_cast<unsigned>(height), 1,
                                    BlackPixel(m_display, screen),
-                                   WhitePixel(m_display, screen));
+                                   BlackPixel(m_display, screen));
     if (!m_window) { close(); return false; }
     XStoreName(m_display, m_window, title.c_str());
-
-    XSelectInput(m_display, m_window, ExposureMask | StructureNotifyMask);
+    XSelectInput(m_display, m_window,
+                 KeyPressMask | KeyReleaseMask | ExposureMask | StructureNotifyMask);
     XMapWindow(m_display, m_window);
-
     m_gc = XCreateGC(m_display, m_window, 0, nullptr);
 
-    // Find 24-bit TrueColor visual to guarantee 3 bytes/pixel
+    // Выбор TrueColor 24-бит визуала
     XVisualInfo visInfo;
     if (!XMatchVisualInfo(m_display, screen, 24, TrueColor, &visInfo)) {
         close(); return false;
     }
+    m_visual = visInfo.visual;
+    m_depth = visInfo.depth;
 
-    m_image = XCreateImage(m_display, visInfo.visual, visInfo.depth,
-                           ZPixmap, 0, nullptr, width, height, 32, 0);
-    if (!m_image) { close(); return false; }
+    // Выделение XImage (MIT-SHM или обычный)
+    allocateImage(width, height);
 
-    m_bpp = m_image->bits_per_pixel / 8;  // bytes per pixel (3 for 24-bit)
-    m_image->data = new char[height * m_image->bytes_per_line];
-    m_rgbBuf = new uint8_t[width * height * m_bpp];
-
-    // Wait for window to appear
-    XEvent e;
-    while (true) {
-        XNextEvent(m_display, &e);
-        if (e.type == MapNotify) break;
+    // Инициализация CUDA для конвертации NV12→BGRA и масштабирования
+    m_cuda = new CudaDisplay();
+    if (m_cuda->init(width, height)) {
+        m_cudaReady = true;
+        fprintf(stderr, "[Display] Используется GPU-ускорение CUDA\n");
+    } else {
+        delete m_cuda; m_cuda = nullptr;
+        m_cudaReady = false;
+        fprintf(stderr, "[Display] ошибка инициализации CUDA\n");
+        close();
+        return false;
     }
 
+    XSync(m_display, False);
     return true;
 }
 
-void DisplayWindow::close() {
-    if (m_rgbBuf) { delete[] m_rgbBuf; m_rgbBuf = nullptr; }
+// Выделение XImage: попытка MIT-SHM (zero-copy), fallback на обычный XImage
+void DisplayWindow::allocateImage(int width, int height) {
+    // Попытка MIT-SHM (zero-copy, корректный fallback при BadAccess)
+    m_useShm = loadXShm() && pXShmQueryExtension(m_display);
+    if (m_useShm) {
+        m_image = pXShmCreateImage(m_display, m_visual, (unsigned)m_depth,
+                                   ZPixmap, nullptr, &m_shmInfo,
+                                   static_cast<unsigned>(width),
+                                   static_cast<unsigned>(height));
+        if (m_image) {
+            // Выделение разделяемой памяти
+            m_shmInfo.shmid = shmget(IPC_PRIVATE,
+                                     static_cast<size_t>(m_image->bytes_per_line)
+                                         * static_cast<size_t>(m_image->height),
+                                     IPC_CREAT | 0600);
+            if (m_shmInfo.shmid >= 0) {
+                m_shmInfo.shmaddr = (char*)shmat(m_shmInfo.shmid, nullptr, 0);
+                if (m_shmInfo.shmaddr != (char*)-1) {
+                    m_image->data = m_shmInfo.shmaddr;
+                    m_shmInfo.readOnly = False;
+
+                    // Установка обработчика ошибок для перехвата BadShmSeg
+                    static bool s_shmError;
+                    s_shmError = false;
+                    auto oldHandler = XSetErrorHandler(
+                        [](::Display*, XErrorEvent*) -> int {
+                            s_shmError = true;
+                            return 0;
+                        });
+                    pXShmAttach(m_display, &m_shmInfo);
+                    XSync(m_display, False);
+                    XSetErrorHandler(oldHandler);
+                    if (s_shmError) m_useShm = false;
+                } else { m_useShm = false; }
+            } else { m_useShm = false; }
+        } else { m_useShm = false; }
+
+        // Очистка при неудаче MIT-SHM
+        if (!m_useShm) {
+            if (m_shmInfo.shmaddr && m_shmInfo.shmaddr != (char*)-1) {
+                shmdt(m_shmInfo.shmaddr);
+                shmctl(m_shmInfo.shmid, IPC_RMID, nullptr);
+            }
+            if (m_image) { XDestroyImage(m_image); m_image = nullptr; }
+            memset(&m_shmInfo, 0, sizeof(m_shmInfo));
+        }
+    }
+
+    // Fallback: обычный XImage (без SHM)
+    if (!m_image) {
+        m_image = XCreateImage(m_display, m_visual, (unsigned)m_depth,
+                               ZPixmap, 0, nullptr,
+                               static_cast<unsigned>(width),
+                               static_cast<unsigned>(height), 32, 0);
+        if (m_image) {
+            m_image->data = (char*)malloc(static_cast<size_t>(height)
+                                          * (size_t)m_image->bytes_per_line);
+            if (!m_image->data) {
+                XDestroyImage(m_image);
+                m_image = nullptr;
+                return;
+            }
+        }
+    }
+
+    if (!m_image) return;
+
+    m_bpp = m_image->bits_per_pixel / 8;
+    // Заполнение чёрным (letterbox/pillarbox)
+    memset(m_image->data, 0, static_cast<size_t>(height) * (size_t)m_image->bytes_per_line);
+
+    m_width = width;
+    m_height = height;
+}
+
+// Уничтожение XImage и освобождение SHM ресурсов
+void DisplayWindow::destroyImage() {
     if (m_image) {
-        if (m_image->data) delete[] m_image->data;
-        XDestroyImage(m_image);
+        if (m_useShm) {
+            pXShmDetach(m_display, &m_shmInfo);
+            XDestroyImage(m_image);
+            if (m_shmInfo.shmaddr && m_shmInfo.shmaddr != (char*)-1) {
+                shmdt(m_shmInfo.shmaddr);
+                shmctl(m_shmInfo.shmid, IPC_RMID, nullptr);
+            }
+        } else {
+            XDestroyImage(m_image);
+        }
         m_image = nullptr;
     }
+    memset(&m_shmInfo, 0, sizeof(m_shmInfo));
+}
+
+// Закрытие окна и освобождение всех ресурсов (CUDA, XImage, GC, Display)
+void DisplayWindow::close() {
+    std::lock_guard<std::mutex> lock(m_xMtx);
+    if (m_cuda) { delete m_cuda; m_cuda = nullptr; m_cudaReady = false; }
+
+    destroyImage();
+
     if (m_gc) { XFreeGC(m_display, m_gc); m_gc = nullptr; }
     if (m_window) { XDestroyWindow(m_display, m_window); m_window = 0; }
     if (m_display) { XCloseDisplay(m_display); m_display = nullptr; }
 }
 
-void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
-                              int width, int height,
-                              int strideY, int strideUV) {
-    if (!m_image || !m_rgbBuf) return;
-
-    nv12ToRgb(yPlane, uvPlane, m_rgbBuf, width, height, strideY, strideUV);
-
-    // Copy RGB to XImage (BGR order for X). m_bpp = 3 for 24-bit visual.
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int srcIdx = (y * width + x) * 3;
-            int dstIdx = y * m_image->bytes_per_line + x * m_bpp;
-            m_image->data[dstIdx + 0] = m_rgbBuf[srcIdx + 2];
-            m_image->data[dstIdx + 1] = m_rgbBuf[srcIdx + 1];
-            m_image->data[dstIdx + 2] = m_rgbBuf[srcIdx + 0];
+// Обработка событий X11: изменение размера окна (пересоздание XImage) и клавиши.
+// Клавиши кладутся в очередь; авто-повтор (удержание) игнорируется.
+void DisplayWindow::pollEvents() {
+    std::lock_guard<std::mutex> lock(m_xMtx);
+    XEvent ev;
+    while (XPending(m_display)) {
+        XNextEvent(m_display, &ev);
+        if (ev.type == ConfigureNotify) {
+            int newW = ev.xconfigure.width;
+            int newH = ev.xconfigure.height;
+            if (newW > 0 && newH > 0 &&
+                (newW != m_width || newH != m_height)) {
+                destroyImage();
+                allocateImage(newW, newH);
+                if (m_cuda) m_cuda->init(newW, newH);
+            }
+        } else if (ev.type == KeyPress) {
+            KeySym key = XLookupKeysym(&ev.xkey, 0);
+            if (key != NoSymbol) enqueueKey((int)key, true);
+        } else if (ev.type == KeyRelease) {
+            // Пропуск авто-повтора: если сразу за KeyRelease идёт KeyPress того
+            // же keycode — это автоповтор удерживаемой клавиши.
+            XEvent peek;
+            if (XPending(m_display)) {
+                XPeekEvent(m_display, &peek);
+                if (peek.type == KeyPress &&
+                    peek.xkey.keycode == ev.xkey.keycode) {
+                    continue;
+                }
+            }
+            KeySym key = XLookupKeysym(&ev.xkey, 0);
+            if (key != NoSymbol) enqueueKey((int)key, false);
         }
     }
-
-    XPutImage(m_display, m_window, m_gc, m_image,
-              0, 0, 0, 0, width, height);
-    XFlush(m_display);
 }
 
-// NV12 → RGB24 conversion (BT.601 limited range).
-// NV12: Y plane (stride bytes/row) + interleaved UV plane (same stride, half height).
-void DisplayWindow::nv12ToRgb(uint8_t* yPlane, uint8_t* uvPlane,
-                              uint8_t* rgb, int w, int h,
-                              int strideY, int /*strideUV*/) {
-    int stride = strideY;  // for NV12, UV stride == Y stride
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            int yi = y * stride + x;
-            int uvIdx = (y / 2) * stride + (x / 2) * 2;
-            int Y = yPlane[yi];
-            int U = uvPlane[uvIdx];
-            int V = uvPlane[uvIdx + 1];
+// Добавление события клавиши в очередь
+void DisplayWindow::enqueueKey(int keysym, bool pressed) {
+    std::lock_guard<std::mutex> lock(m_keyMtx);
+    m_keyEvents.push_back(std::make_pair(keysym, pressed));
+}
 
-            int C = Y - 16;
-            int D = U - 128;
-            int E = V - 128;
+// Извлечение события клавиши из очереди
+bool DisplayWindow::popKeyEvent(int& keysym, bool& pressed) {
+    std::lock_guard<std::mutex> lock(m_keyMtx);
+    if (m_keyEvents.empty()) return false;
+    keysym = m_keyEvents.front().first;
+    pressed = m_keyEvents.front().second;
+    m_keyEvents.pop_front();
+    return true;
+}
 
-            int R = (298 * C + 409 * E + 128) >> 8;
-            int G = (298 * C - 100 * D - 208 * E + 128) >> 8;
-            int B = (298 * C + 516 * D + 128) >> 8;
+// Отображение NV12 кадра: конвертация на GPU → копирование в XImage → вывод в окно
+void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
+                              int srcW, int srcH,
+                              int strideY, int strideUV) {
+    std::lock_guard<std::mutex> lock(m_xMtx);
+    if (!m_image || !m_image->data || !m_cudaReady || !m_cuda) return;
 
-            int outIdx = (y * w + x) * 3;
-            rgb[outIdx + 0] = std::max(0, std::min(255, R));
-            rgb[outIdx + 1] = std::max(0, std::min(255, G));
-            rgb[outIdx + 2] = std::max(0, std::min(255, B));
-        }
+    // Масштабирование с сохранением пропорций
+    double scale = std::min((double)m_width / srcW, (double)m_height / srcH);
+    int outW = (int)(srcW * scale + 0.5);
+    int outH = (int)(srcH * scale + 0.5);
+    int offX = (m_width  - outW) / 2;
+    int offY = (m_height - outH) / 2;
+
+    // CUDA: масштабирование + конвертация NV12→BGRA на GPU
+    int outStride = 0;
+    uint8_t* bgra = m_cuda->process(yPlane, uvPlane, strideY, strideUV,
+                                    srcW, srcH, outW, outH, outStride);
+    if (!bgra) return;
+
+    // Заполнение чёрным (letterbox/pillarbox)
+    memset(m_image->data, 0,
+           static_cast<size_t>(m_height) * (size_t)m_image->bytes_per_line);
+
+    // Копирование BGRA данных в XImage построчно
+    for (int y = 0; y < outH; y++) {
+        int dstRow = offY + y;
+        if (dstRow >= m_height) break;
+        const uint8_t* srcRow = bgra + y * outStride;
+        char* dstRowPtr = m_image->data + dstRow * m_image->bytes_per_line
+                          + offX * m_bpp;
+        memcpy(dstRowPtr, srcRow, outW * 4);
     }
+
+    // Вывод кадра в окно: MIT-SHM (zero-copy) или обычный XPutImage
+    if (m_useShm)
+        pXShmPutImage(m_display, m_window, m_gc, m_image,
+                      0, 0, 0, 0, static_cast<unsigned>(m_width),
+                      static_cast<unsigned>(m_height), False);
+    else
+        XPutImage(m_display, m_window, m_gc, m_image,
+                  0, 0, 0, 0, static_cast<unsigned>(m_width),
+                  static_cast<unsigned>(m_height));
 }
