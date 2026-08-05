@@ -47,15 +47,17 @@ DisplayWindow::DisplayWindow()
       m_width(0), m_height(0),
       m_cuda(nullptr), m_cudaReady(false),
       m_bpp(0), m_useShm(false),
-      m_frameCounter(0) {
+      m_frameCounter(0), m_overlayOnly(false) {
     memset(&m_shmInfo, 0, sizeof(m_shmInfo));
 }
 
 DisplayWindow::~DisplayWindow() { close(); }
 
 // Открытие окна X11, создание XImage (SHM или обычный), инициализация CUDA
-bool DisplayWindow::open(const std::string& title, int width, int height) {
+bool DisplayWindow::open(const std::string& title, int width, int height,
+                         bool overlayOnly) {
     close();
+    m_overlayOnly = overlayOnly;
     m_width = width;
     m_height = height;
 
@@ -82,6 +84,11 @@ bool DisplayWindow::open(const std::string& title, int width, int height) {
                  KeyPressMask | KeyReleaseMask | ExposureMask | StructureNotifyMask);
     XMapWindow(m_display, m_window);
     m_gc = XCreateGC(m_display, m_window, 0, nullptr);
+
+    // Overlay-only: окно отдаётся внешнему рендеру (nv3dsink), пиксельный
+    // буфер и CUDA не нужны — но окно должно быть отображено до set_window_handle.
+    XSync(m_display, False);
+    if (m_overlayOnly) return true;
 
     // Выбор TrueColor 24-бит визуала
     XVisualInfo visInfo;
@@ -272,6 +279,7 @@ bool DisplayWindow::popKeyEvent(int& keysym, bool& pressed) {
 void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
                               int srcW, int srcH,
                               int strideY, int strideUV) {
+    if (m_overlayOnly) return;  // рендер внешний (nv3dsink)
     if (!m_image || !m_image->data || !m_cudaReady || !m_cuda) return;
 
     // Масштабирование с сохранением пропорций (вычисляем без блокировки)

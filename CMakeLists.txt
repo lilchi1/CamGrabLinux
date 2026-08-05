@@ -47,7 +47,6 @@ add_executable(rtsp_decoder
     src/display/Display.cpp
     src/display/CudaDisplay.cpp
     src/display/CudaKernels.cu
-    src/ptz/PtzControl.cpp
 )
 
 target_include_directories(rtsp_decoder PRIVATE

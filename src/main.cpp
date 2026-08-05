@@ -11,6 +11,7 @@ volatile std::sig_atomic_t g_running = 1;
 bool g_benchmarkMode = false;      // Режим бенчмарка (без отображения)
 int g_winWidth  = 1600;            // Размер окна отображения (по умолчанию)
 int g_winHeight = 900;
+std::string g_displayMode = "xvimagesink"; // Режим отображения: xvimagesink (default) | cuda
 
 // Обработчик сигналов SIGINT/SIGTERM — корректное завершение
 static void signalHandler(int) {
@@ -53,12 +54,14 @@ static void printUsage(const char* progname) {
     std::cout << "  -b, --benchmark    Режим бенчмарка (без отображения окна)" << std::endl;
     std::cout << "  -w, --width W      Ширина окна отображения (по умолчанию 1600)" << std::endl;
     std::cout << "  -H, --height H     Высота окна отображения (по умолчанию 900)" << std::endl;
+    std::cout << "  -d, --display M    Режим отображения: xvimagesink (по умолчанию) | cuda" << std::endl;
     std::cout << "  -h, --help         Показать эту справку" << std::endl;
     std::cout << std::endl;
     std::cout << "Примеры:" << std::endl;
     std::cout << "  " << progname << "                      # Обычный режим с отображением" << std::endl;
     std::cout << "  " << progname << " -b                  # Режим бенчмарка (без окна)" << std::endl;
     std::cout << "  " << progname << " --width 1280 --height 720   # Окно 1280x720" << std::endl;
+    std::cout << "  " << progname << " --display cuda       # Фолбэк: рендер CUDA + XPutImage" << std::endl;
     std::cout << "  " << progname << " --benchmark         # Бенчмарк с логированием" << std::endl;
 }
 
@@ -72,12 +75,13 @@ int main(int argc, char* argv[]) {
         {"benchmark", no_argument,       0, 'b'},
         {"width",     required_argument, 0, 'w'},
         {"height",    required_argument, 0, 'H'},
+        {"display",   required_argument, 0, 'd'},
         {"help",      no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "bw:H:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "bw:H:d:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'b':
                 g_benchmarkMode = true;
@@ -90,6 +94,17 @@ int main(int argc, char* argv[]) {
             case 'H': {
                 int v = std::atoi(optarg);
                 if (v > 0) g_winHeight = v;
+                break;
+            }
+            case 'd': {
+                std::string mode = optarg;
+                if (mode == "xvimagesink" || mode == "cuda") {
+                    g_displayMode = mode;
+                } else {
+                    std::cerr << "Неизвестный режим отображения: " << mode
+                              << " (допустимо: cuda, xvimagesink)" << std::endl;
+                    return 1;
+                }
                 break;
             }
             case 'h':
@@ -109,7 +124,7 @@ int main(int argc, char* argv[]) {
     if (g_benchmarkMode) {
         std::cout << "🔬 РЕЖИМ БЕНЧМАРКА (отображение ОТКЛЮЧЕНО)" << std::endl;
     } else {
-        std::cout << "🖥️  ОБЫЧНЫЙ РЕЖИМ (с отображением)" << std::endl;
+        std::cout << "🖥️  ОБЫЧНЫЙ РЕЖИМ (с отображением, режим: " << g_displayMode << ")" << std::endl;
     }
     std::cout << "📊 Логирование: ВКЛ (CSV)" << std::endl;
     std::cout << std::endl;

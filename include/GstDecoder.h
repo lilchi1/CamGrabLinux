@@ -6,8 +6,11 @@
 // ДО декодера (только I/P-кадры) — NVDEC не выполняет reorder, задержка минимальна.
 // Низкая задержка: disable-dpb, enable-max-performance, num-extra-surfaces=0,
 // appsrc is-live=FALSE, стабилизатор темпа 30 мс.
-// Время декодирования одного пакета замеряется как разница между отправкой
-// пакета в appsrc и получением декодированного кадра из appsink (FIFO-сопоставление).
+// Время декодирования кадра замеряется pad-пробами на nvv4l2decoder:
+// время входа буфера в sink-пад минус время выхода кадра из src-пада
+// (чистое аппаратное декодирование NVDEC, без parse/очередей/рендера).
+// Сопоставление по PTS (а не FIFO): SPS/PPS-пакеты входят в декодер без
+// выхода, а стабилизатор темпа и drop=TRUE у appsink могут дропать кадры.
 #pragma once
 
 #include <atomic>
@@ -25,7 +28,8 @@ class GstDecoder {
 public:
     // Статистика декодирования кадра (мс)
     struct DecodeStats {
-        double decodeMs = -1.0;         // общая: пуш в appsrc → кадр из appsink
+        double decodeMs = -1.0;         // чистое декодирование NVDEC: sink-пад → src-пад
+        double decodeFuncMs = -1.0;     // = decodeMs (вход декодера → выход кадра)
         double pushBlockMs = -1.0;      // блокировка gst_app_src_push_buffer (backpressure)
         double frameIntervalMs = -1.0;  // интервал между кадрами из appsink
         double displayMs = -1.0;        // время обработки кадра в колбэке (CUDA+X11)
@@ -38,8 +42,10 @@ public:
     GstDecoder();
     ~GstDecoder();
 
-    // Открытие декодера для указанного кодека (AV_CODEC_ID_H264 / H265)
-    bool open(int codecId);
+    // Открытие декодера для указанного кодека (AV_CODEC_ID_H264 / H265).
+    // overlaySink: рендер через xvimagesink в окно overlayWindow (своё X11-окно
+    // приложения); замеры остаются на ветке appsink (NVMM, без маппинга пикселей).
+    bool open(int codecId, bool overlaySink = false, guintptr overlayWindow = 0);
 
     // Закрытие декодера и остановка GStreamer-пайплайна
     void close();
@@ -71,6 +77,8 @@ private:
     GstElement* m_appsrc;     // Элемент appsrc (вход закодированных пакетов)
     GstElement* m_appsink;    // Элемент appsink (выход NV12 кадров)
     int m_codecId;            // ID кодека (H.264/H.265)
+    bool m_overlayMode;       // Режим отображения: overlay (tee + xvimagesink + NVMM appsink)
+    guintptr m_overlayWindow; // X11-хендл окна для xvimagesink (0 = своё окно)
 
     FrameCallback m_frameCb;      // Доставка NV12 кадров
     LatencyCb m_latencyCb;        // Доставка времени декодирования кадра
@@ -80,11 +88,22 @@ private:
     std::atomic<bool> m_failed;   // Флаг сбоя конвейера
     std::atomic<uint64_t> m_droppedB;  // отброшено B-кадров
 
-    std::mutex m_mtx;             // Защита m_pushTimes / m_lastPushTime / m_seenKeyframe / m_lastEmitAt
+    std::mutex m_mtx;             // Защита m_pushTimes / m_decInPts / m_decTimes / m_lastPushTime / m_seenKeyframe / m_lastEmitAt
     std::deque<std::chrono::steady_clock::time_point> m_pushTimes; // времена отправки VCL-пакетов (FIFO)
     std::chrono::steady_clock::time_point m_lastPushTime;          // время последней отправки
     bool m_seenKeyframe;          // получен ли первый ключевой кадр
     std::chrono::steady_clock::time_point m_lastEmitAt;  // время последнего выданного кадра (стабилизатор темпа)
+
+    // ─── Замер чистого времени декодирования (pad-пробы на декодере) ────────
+    // m_decInPts:  (PTS → время входа буфера в sink-пад декодера)
+    // m_decTimes:  (PTS → время декодирования sink→src, мс)
+    GstPad* m_decSinkPad = nullptr;   // sink-пад nvv4l2decoder
+    GstPad* m_decSrcPad  = nullptr;   // src-пад  nvv4l2decoder
+    gulong  m_decInProbeId  = 0;      // id пробы на sink-паде
+    gulong  m_decOutProbeId = 0;      // id пробы на src-паде
+    std::deque<std::pair<int64_t, std::chrono::steady_clock::time_point>> m_decInPts;
+    std::deque<std::pair<int64_t, double>> m_decTimes;
+    double m_lastDecodeMs = -1.0;     // последний измеренный decodeMs (fallback при PTS=-1)
 
     // ─── Замер времени декодирования (FIFO push→кадр) ─────────────────────────
     std::chrono::steady_clock::time_point m_lastSampleAt;   // время последнего кадра из appsink
@@ -92,6 +111,8 @@ private:
 
     static GstFlowReturn onNewSample(GstElement* sink, gpointer userData);
     static GstBusSyncReply onBusMessage(GstBus* bus, GstMessage* msg, gpointer userData);
+    static GstPadProbeReturn onDecInProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
+    static GstPadProbeReturn onDecOutProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
     static void scanPacket(int codecId, const uint8_t* data, int size,
                            bool& hasVcl, bool& isKey);
     static bool hasBSlice(int codecId, const uint8_t* data, int size);

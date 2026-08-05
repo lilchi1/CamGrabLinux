@@ -43,12 +43,30 @@ void cameraThread(std::string url, int camIdx) {
         }
     }
 
+    // Режим отображения: overlay (xvimagesink в наше окно) или CUDA+X11
+    bool useOverlay = (g_displayMode == "xvimagesink");
+
+    // Создание окна отображения (размер из флагов --width/--height, чёрное до
+    // первого кадра). В режиме бенчмарка окно не создаём — замер чистого декодирования.
+    // В overlay-режиме окно — контейнер (без XImage/CUDA), клавиши наши.
+    DisplayWindow* display = nullptr;
+    if (!g_benchmarkMode) {
+        display = new DisplayWindow();
+        if (!display->open("Камера " + std::to_string(camIdx) + " - " + url,
+                           g_winWidth, g_winHeight, useOverlay)) {
+            delete display;
+            display = nullptr;
+        }
+    }
+    bool overlaySink = useOverlay && (display != nullptr);
+    guintptr winHandle = overlaySink ? (guintptr)display->window() : 0;
+
     // Выбор декодера: аппаратный NVDEC через GStreamer nvv4l2decoder (JetPack 6)
     std::unique_ptr<GstDecoder> gstDec;
 
     if (codecId == AV_CODEC_ID_H264 || codecId == AV_CODEC_ID_H265) {
         gstDec = std::make_unique<GstDecoder>();
-        if (gstDec->open(codecId)) {
+        if (gstDec->open(codecId, overlaySink, winHandle)) {
             logWrite("INFO", url, "Используется GStreamer nvv4l2decoder (аппаратный NVDEC)");
         } else {
             logWrite("ERROR", url, "GStreamer nvv4l2decoder недоступен");
@@ -63,29 +81,8 @@ void cameraThread(std::string url, int camIdx) {
         setCamConnected(camIdx, false, url);
         stopCamRunning(camIdx);
         reader.close();
+        delete display;
         return;
-    }
-
-    // Создание окна отображения (размер из флагов --width/--height, чёрное до
-    // первого кадра). В режиме бенчмарка окно не создаём — замер чистого декодирования.
-    DisplayWindow* display = nullptr;
-    if (!g_benchmarkMode) {
-        display = new DisplayWindow();
-        if (!display->open("Камера " + std::to_string(camIdx) + " - " + url,
-                           g_winWidth, g_winHeight)) {
-            delete display;
-            display = nullptr;
-        }
-    }
-
-    // Управление поворотной камерой (PTZ): стрелки, если камера поддерживает ISAPI
-    std::unique_ptr<PtzControl> ptz;
-    if (display) {
-        ptz = std::make_unique<PtzControl>();
-        if (ptz->open(url))
-            logWrite("INFO", url, "PTZ доступен: стрелки управляют камерой");
-        else
-            logWrite("WARN", url, "PTZ недоступен (стрелки неактивны)");
     }
 
     // CSV-файл с детальной статистикой декодирования (в папке logs/).
@@ -98,7 +95,7 @@ void cameraThread(std::string url, int camIdx) {
         csvFile.open(csvPath);
         if (csvFile.is_open()) {
             csvFile << "resolution,frame_no,pts,codec,source_width,source_height,"
-                    << "decode_ms,push_block_ms,display_ms,frame_interval_ms,"
+                    << "decode_ms,decode_func_ms,push_block_ms,display_ms,frame_interval_ms,"
                     << "queue_depth,decoded_at\n";
             logWrite("INFO", url, "CSV-логирование включено: " + csvPath);
         } else {
@@ -129,7 +126,7 @@ void cameraThread(std::string url, int camIdx) {
     bool dispStop = false;
     std::thread dispThread;
 
-    if (display) {
+    if (display && !overlaySink) {
         dispThread = std::thread([&]() {
             while (true) {
                 DispFrame f;
@@ -168,6 +165,7 @@ void cameraThread(std::string url, int camIdx) {
         uint64_t frameNo = 0;
         int64_t pts = -1;
         double decodeMs = -1.0;
+        double decodeFuncMs = -1.0;
         double pushBlockMs = -1.0;
         double displayMs = -1.0;
         double frameIntervalMs = -1.0;
@@ -207,6 +205,7 @@ void cameraThread(std::string url, int camIdx) {
                     << w << ","
                     << h << ","
                     << r.decodeMs << ","
+                    << r.decodeFuncMs << ","
                     << r.pushBlockMs << ","
                     << r.displayMs << ","
                     << r.frameIntervalMs << ","
@@ -241,6 +240,7 @@ void cameraThread(std::string url, int camIdx) {
             r.frameNo = frameCount;
             r.pts = pts;
             r.decodeMs = st.decodeMs;
+            r.decodeFuncMs = st.decodeFuncMs;
             r.pushBlockMs = st.pushBlockMs;
             r.displayMs = st.displayMs;
             r.frameIntervalMs = st.frameIntervalMs;
@@ -292,7 +292,7 @@ void cameraThread(std::string url, int camIdx) {
 
     // ─── Главный цикл: чтение RTSP → отправка пакетов в декодер ──────────
     while (g_running && isCamRunning(camIdx)) {
-        // Обработка клавиатуры: ESC — выход, стрелки — PTZ (поворот камеры)
+        // Обработка клавиатуры: ESC — выход из программы
         if (display) {
             display->pollEvents();
             int ks;
@@ -301,16 +301,6 @@ void cameraThread(std::string url, int camIdx) {
                 if (ks == XK_Escape && pr) {
                     logWrite("INFO", url, "ESC: выход из программы");
                     g_running = 0;
-                } else if (ptz && ptz->isOpen()) {
-                    PtzControl::Dir dir = (PtzControl::Dir)-1;
-                    switch (ks) {
-                        case XK_Left:  dir = PtzControl::Dir::Left;  break;
-                        case XK_Right: dir = PtzControl::Dir::Right; break;
-                        case XK_Up:    dir = PtzControl::Dir::Up;    break;
-                        case XK_Down:  dir = PtzControl::Dir::Down;  break;
-                        default: break;
-                    }
-                    if ((int)dir >= 0) ptz->onKey(dir, pr);
                 }
             }
         }
@@ -319,7 +309,7 @@ void cameraThread(std::string url, int camIdx) {
         if (gstDec && gstDec->failed()) {
             logWrite("WARN", url, "Ошибка GStreamer-конвейера, перезапуск декодера...");
             gstDec->close();
-            if (!gstDec->open(codecId)) {
+            if (!gstDec->open(codecId, overlaySink, winHandle)) {
                 logWrite("ERROR", url, "Переинициализация декодера не удалась");
                 break;
             }
@@ -346,7 +336,7 @@ void cameraThread(std::string url, int camIdx) {
             int newH = reader.height();
             if (gstDec && gstDec->isOpen()) {
                 gstDec->close();
-                if (!gstDec->open(codecId)) {
+                if (!gstDec->open(codecId, overlaySink, winHandle)) {
                     logWrite("ERROR", url, "Переинициализация декодера не удалась");
                     break;
                 }
@@ -393,7 +383,6 @@ void cameraThread(std::string url, int camIdx) {
     }
     dispCv.notify_all();
     if (dispThread.joinable()) dispThread.join();
-    if (ptz) ptz->close();
     if (display) { delete display; display = nullptr; }
     reader.close();
     stopCamRunning(camIdx);

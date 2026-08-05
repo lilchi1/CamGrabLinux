@@ -36,7 +36,6 @@ extern "C" {
 #include "CameraThread.h"
 #include "GstDecoder.h"
 #include "RtspReader.h"
-#include "PtzControl.h"
 
 // Замер скорости декодирования кадра: время между отправкой пакета в декодер
 // и получением декодированного кадра (мс). Определена в main.cpp.

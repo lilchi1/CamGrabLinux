@@ -24,8 +24,11 @@ public:
     DisplayWindow();
     ~DisplayWindow();
 
-    // Открытие окна с указанным заголовком и размером
-    bool open(const std::string& title, int width, int height);
+    // Открытие окна с указанным заголовком и размером.
+    // overlayOnly: окно без XImage/SHM/CUDA — используется как контейнер для
+    // внешнего рендера (nv3dsink через GstVideoOverlay), клавиши остаются нашими.
+    bool open(const std::string& title, int width, int height,
+              bool overlayOnly = false);
 
     // Закрытие окна и освобождение ресурсов
     void close();
@@ -34,6 +37,13 @@ public:
     void showFrame(uint8_t* yPlane, uint8_t* uvPlane,
                    int srcW, int srcH,
                    int strideY, int strideUV);
+
+    // X11-хендл окна (для nv3dsink set_window_handle)
+    ::Display* xDisplay() const { return m_display; }
+    Window window() const { return m_window; }
+
+    // Флаг overlay-only режима (рендер внешний, XImage/CUDA не создаются)
+    bool overlayOnly() const { return m_overlayOnly; }
 
     // Обработка событий X11 (изменение размера окна, клавиши) — вызывать из главного цикла
     void pollEvents();
@@ -65,6 +75,7 @@ private:
     std::mutex m_xMtx;   // Сериализация доступа к X11-коннекту и окну (только для вывода)
     
     int m_frameCounter;  // Счётчик кадров для периодического XFlush
+    bool m_overlayOnly;  // Флаг: окно только как контейнер для внешнего рендера
 
     void allocateImage(int width, int height);  // Выделение XImage (SHM или обычный)
     void destroyImage();                         // Уничтожение XImage и SHM

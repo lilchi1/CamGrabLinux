@@ -28,6 +28,7 @@ extern std::atomic<bool> g_logDecodeSpeed;           // Логировать с�
 extern bool g_benchmarkMode;                         // Режим бенчмарка (main.cpp)
 extern int g_winWidth;                               // Размер окна отображения (main.cpp)
 extern int g_winHeight;
+extern std::string g_displayMode;                    // Режим отображения: cuda | xvimagesink (main.cpp)
 
 // Потокобезопасные операции над состоянием камер
 bool isCamRunning(int camIdx);
