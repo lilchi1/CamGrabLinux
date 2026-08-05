@@ -279,7 +279,7 @@ void cameraThread(std::string url, int camIdx) {
     if (ptz) ptz->close();
     if (csvFile.is_open()) {
         csvFile.close();
-        logWrite("INFO", url, "CSV-файл сохранён: decode_times_" + 
+        logWrite("INFO", url, "CSV-файл сохранён: logs/decode_times_" + 
                  std::to_string(camIdx) + ".csv");
     }
     if (display) { delete display; display = nullptr; }

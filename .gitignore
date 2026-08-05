@@ -13,4 +13,6 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 decode_times_*.json
+decode_times_*.csv
+logs/
 .env
