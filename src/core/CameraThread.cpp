@@ -2,6 +2,8 @@
 #include "headers.h"
 #include "Display.h"
 #include <X11/keysym.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // Главный поток камеры: RTSP → декодирование → отображение
 void cameraThread(std::string url, int camIdx) {
@@ -74,17 +76,18 @@ void cameraThread(std::string url, int camIdx) {
             logWrite("WARN", url, "PTZ недоступен (стрелки неактивны)");
     }
 
-    // CSV-файл с детальной статистикой декодирования
+    // CSV-файл с детальной статистикой декодирования (в папке logs/)
     std::ofstream csvFile;
     if (camIdx >= 0 && g_logDecodeSpeed) {
-        csvFile.open("decode_times_" + std::to_string(camIdx) + ".csv");
+        mkdir("logs", 0755);
+        std::string csvPath = "logs/decode_times_" + std::to_string(camIdx) + ".csv";
+        csvFile.open(csvPath);
         if (csvFile.is_open()) {
             // Заголовок CSV
             csvFile << "resolution,frame_no,pts,codec,source_width,source_height,"
                     << "decode_ms,push_block_ms,app_to_dec_ms,dec_to_conv_ms,"
                     << "conv_to_sink_ms,display_ms,frame_interval_ms,queue_depth,decoded_at\n";
-            logWrite("INFO", url, "CSV-логирование включено: decode_times_" + 
-                     std::to_string(camIdx) + ".csv");
+            logWrite("INFO", url, "CSV-логирование включено: " + csvPath);
         } else {
             logWrite("WARN", url, "Не удалось открыть CSV-файл со статистикой декодирования");
         }
