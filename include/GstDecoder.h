@@ -2,6 +2,10 @@
 // JetPack 6 (Orin, R36) не содержит V4L2 M2M NVDEC-драйвера (CONFIG_VIDEO_TEGRA
 // отключён), поэтому декодирование выполняется через NVMM-элемент nvv4l2decoder.
 // Пайплайн: appsrc → h264/h265parse → nvv4l2decoder → nvvidconv → video/x-raw,NV12 → appsink
+// Проект полностью изолирован от B-кадров: пакеты, содержащие B-срез, отбрасываются
+// ДО декодера (только I/P-кадры) — NVDEC не выполняет reorder, задержка минимальна.
+// Низкая задержка: disable-dpb, enable-max-performance, num-extra-surfaces=0,
+// appsrc is-live=FALSE, стабилизатор темпа 30 мс.
 // Время декодирования одного пакета замеряется как разница между отправкой
 // пакета в appsrc и получением декодированного кадра из appsink (FIFO-сопоставление).
 #pragma once
@@ -11,7 +15,6 @@
 #include <chrono>
 #include <deque>
 #include <functional>
-#include <map>
 #include <mutex>
 
 #include <gst/gst.h>
@@ -20,13 +23,10 @@
 
 class GstDecoder {
 public:
-    // Статистика декодирования кадра — задержки по элементам пайплайна (мс)
+    // Статистика декодирования кадра (мс)
     struct DecodeStats {
         double decodeMs = -1.0;         // общая: пуш в appsrc → кадр из appsink
         double pushBlockMs = -1.0;      // блокировка gst_app_src_push_buffer (backpressure)
-        double appToDecMs = -1.0;       // appsrc → выход nvv4l2decoder (parse+декодер)
-        double decToConvMs = -1.0;      // nvv4l2decoder → выход nvvidconv
-        double convToSinkMs = -1.0;     // nvvidconv → вход appsink
         double frameIntervalMs = -1.0;  // интервал между кадрами из appsink
         double displayMs = -1.0;        // время обработки кадра в колбэке (CUDA+X11)
         int queueDepth = 0;             // число невостребованных пушей (глубина буферизации)
@@ -63,6 +63,9 @@ public:
     int width() const { return m_width.load(); }
     int height() const { return m_height.load(); }
 
+    // Сколько B-кадров отброшено (изоляция от B-кадров)
+    uint64_t droppedBFrames() const { return m_droppedB.load(); }
+
 private:
     GstElement* m_pipeline;   // Полный пайплайн
     GstElement* m_appsrc;     // Элемент appsrc (вход закодированных пакетов)
@@ -75,34 +78,21 @@ private:
     std::atomic<int> m_width;     // Разрешение декодированного потока
     std::atomic<int> m_height;
     std::atomic<bool> m_failed;   // Флаг сбоя конвейера
+    std::atomic<uint64_t> m_droppedB;  // отброшено B-кадров
 
-    std::mutex m_mtx;             // Защита m_pushTimes / m_lastPushTime / m_seenKeyframe
+    std::mutex m_mtx;             // Защита m_pushTimes / m_lastPushTime / m_seenKeyframe / m_lastEmitAt
     std::deque<std::chrono::steady_clock::time_point> m_pushTimes; // времена отправки VCL-пакетов (FIFO)
     std::chrono::steady_clock::time_point m_lastPushTime;          // время последней отправки
     bool m_seenKeyframe;          // получен ли первый ключевой кадр
+    std::chrono::steady_clock::time_point m_lastEmitAt;  // время последнего выданного кадра (стабилизатор темпа)
 
-    // ─── Замер задержек по элементам пайплайна ────────────────────────────────
-    GstPad* m_appsrcPad;          // src-pad appsrc (вход в пайплайн)
-    GstPad* m_decPad;             // src-pad nvv4l2decoder (выход декодера)
-    GstPad* m_convPad;            // src-pad nvvidconv
-    GstPad* m_sinkPad;            // sink-pad appsink (приход кадра)
-    gulong m_probeAppsrc, m_probeDec, m_probeConv, m_probeSink;  // ID проб
-
-    struct SampleTs {             // времена прохождения кадра через элементы (по PTS)
-        std::chrono::steady_clock::time_point appsrcOut;
-        std::chrono::steady_clock::time_point decOut;
-        std::chrono::steady_clock::time_point convOut;
-        std::chrono::steady_clock::time_point sinkIn;
-    };
-    std::mutex m_tsMtx;                                     // Защита карт временных меток
-    std::map<int64_t, SampleTs> m_sampleTs;                 // времена проб по PTS кадра
-    std::map<int64_t, std::chrono::steady_clock::time_point> m_pushTs; // время push по PTS
+    // ─── Замер времени декодирования (FIFO push→кадр) ─────────────────────────
     std::chrono::steady_clock::time_point m_lastSampleAt;   // время последнего кадра из appsink
     std::atomic<double> m_lastPushBlockMs;                  // последняя задержка push (мс)
 
     static GstFlowReturn onNewSample(GstElement* sink, gpointer userData);
     static GstBusSyncReply onBusMessage(GstBus* bus, GstMessage* msg, gpointer userData);
-    static GstPadProbeReturn onTsProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
     static void scanPacket(int codecId, const uint8_t* data, int size,
                            bool& hasVcl, bool& isKey);
+    static bool hasBSlice(int codecId, const uint8_t* data, int size);
 };

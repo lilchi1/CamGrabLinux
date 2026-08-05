@@ -15,8 +15,10 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
     AVDictionary* opts = nullptr;
     
     // ─── ТОЛЬКО UDP транспорт ──────────────────────────────────────────────
+    // rtsp_transport=udp — RTP-медиапотоки по UDP. Опцию rtsp_flags не задаём:
+    // prefer_tcp заставляет пробовать TCP первым, prefer_udp не существует.
+    // RTSP-сигнализация (DESCRIBE/SETUP/PLAY) в FFmpeg всегда идёт по TCP:554.
     av_dict_set(&opts, "rtsp_transport", "udp", 0);
-    av_dict_set(&opts, "rtsp_flags", "prefer_tcp", 0);  // Запрещаем TCP
     
     // ─── Минимальная задержка ──────────────────────────────────────────────
     char tbuf[32];
@@ -28,13 +30,13 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
     av_dict_set(&opts, "max_delay", "0", 0);               // Нулевая задержка
     av_dict_set(&opts, "probesize", "32", 0);              // Минимальный размер для определения формата
     av_dict_set(&opts, "analyzeduration", "0", 0);         // Не анализировать длительно
-    av_dict_set(&opts, "buffer_size", "65536", 0);         // Маленький буфер UDP
     
     // ─── Отключить переупорядочивание ──────────────────────────────────────
     av_dict_set(&opts, "reorder_queue_size", "0", 0);      // Без переупорядочивания
     
-    // ─── Игнорировать B-кадры ──────────────────────────────────────────────
-    // Принудительно запрашиваем только I и P кадры
+    // ─── Прямой (без буферизации) доступ к сокету ────────────────────────────
+    // Замечание: сам фильтр B-кадров живёт в GstDecoder::pushPacket — пакеты с
+    // B-срезами отбрасываются ДО декодера (проект изолирован от B-кадров).
     av_dict_set(&opts, "avio_flags", "direct", 0);
     
     // ─── Увеличенный сокетный буфер для UDP ────────────────────────────────

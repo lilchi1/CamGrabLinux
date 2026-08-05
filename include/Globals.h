@@ -26,6 +26,8 @@ extern std::mutex g_printMtx;  // Сериализация вывода в stdou
 extern volatile std::sig_atomic_t g_running;         // Глобальный флаг работы (main.cpp)
 extern std::atomic<bool> g_logDecodeSpeed;           // Логировать скорость декодирования
 extern bool g_benchmarkMode;                         // Режим бенчмарка (main.cpp)
+extern int g_winWidth;                               // Размер окна отображения (main.cpp)
+extern int g_winHeight;
 
 // Потокобезопасные операции над состоянием камер
 bool isCamRunning(int camIdx);

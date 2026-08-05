@@ -1,5 +1,10 @@
 // GstDecoder.cpp — Аппаратный декодер NVDEC через GStreamer (nvv4l2decoder).
 // Пайплайн: appsrc → h264/h265parse → nvv4l2decoder → nvvidconv → video/x-raw,NV12 → appsink
+// Проект полностью изолирован от B-кадров: B-срезы отбрасываются до декодера
+// (только I/P), поэтому NVDEC не выполняет reorder и задержка минимальна.
+// Низкая задержка обеспечивается реальными свойствами nvv4l2decoder:
+// disable-dpb=TRUE + enable-max-performance=TRUE + num-extra-surfaces=0,
+// appsrc is-live=FALSE, стабилизатор темпа 30 мс в onNewSample.
 // Время декодирования кадра замеряется как разница между отправкой пакета
 // в appsrc и получением декодированного кадра из appsink.
 #include "headers.h"
@@ -7,23 +12,63 @@
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
 
+namespace {
+
+// Битовый читатель для exp-golomb кодов в slice-заголовке (после EBSP→RBSP).
+class BitReader {
+public:
+    BitReader(const uint8_t* d, int byteCount) : p(d), bitPos(0), nbits(byteCount * 8) {}
+    bool readBit() {
+        if (bitPos >= nbits) return false;
+        int byte = bitPos >> 3;
+        int bit = 7 - (bitPos & 7);
+        bitPos++;
+        return (p[byte] >> bit) & 1;
+    }
+    uint32_t readUE() {
+        int zeros = 0;
+        while (!readBit()) {
+            zeros++;
+            if (zeros > 31) return 0;
+        }
+        uint32_t val = 1;
+        for (int i = 0; i < zeros; i++) {
+            val <<= 1;
+            if (readBit()) val |= 1;
+        }
+        return val - 1;
+    }
+    bool ok() const { return bitPos <= nbits; }
+private:
+    const uint8_t* p;
+    int bitPos;
+    int nbits;
+};
+
+// Конвертация EBSP → RBSP: удаление байтов эмуляции (00 00 03 → 00 00).
+int ebspToRbsp(const uint8_t* src, int size, uint8_t* dst, int dstCap) {
+    int n = 0;
+    for (int i = 0; i < size && n < dstCap; i++) {
+        if (i + 2 < size && src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 3) {
+            if (n + 2 > dstCap) break;
+            dst[n++] = 0;
+            dst[n++] = 0;
+            i += 2;
+        } else {
+            dst[n++] = src[i];
+        }
+    }
+    return n;
+}
+
+}  // namespace
+
 GstDecoder::GstDecoder()
     : m_pipeline(nullptr), m_appsrc(nullptr), m_appsink(nullptr),
       m_codecId(0), m_width(0), m_height(0), m_failed(false),
-      m_seenKeyframe(false),
-      m_appsrcPad(nullptr), m_decPad(nullptr), m_convPad(nullptr), m_sinkPad(nullptr),
-      m_probeAppsrc(0), m_probeDec(0), m_probeConv(0), m_probeSink(0),
+      m_droppedB(0), m_seenKeyframe(false),
       m_lastPushBlockMs(0.0) {}
-
 GstDecoder::~GstDecoder() { close(); }
-
-// Задержка между двумя моментами времени (мс). -1.0, если один из них не задан.
-static double msBetween(const std::chrono::steady_clock::time_point& a,
-                        const std::chrono::steady_clock::time_point& b) {
-    if (a == std::chrono::steady_clock::time_point{} ||
-        b == std::chrono::steady_clock::time_point{}) return -1.0;
-    return std::chrono::duration<double, std::milli>(a - b).count();
-}
 
 // Поиск NAL-единиц в Annex-B пакете: наличие VCL-среза (тип 1/5 для H.264,
 // 0..31 для H.265) и наличие ключевого кадра (IDR: тип 5 / 19,20).
@@ -55,24 +100,61 @@ void GstDecoder::scanPacket(int codecId, const uint8_t* data, int size,
     }
 }
 
-// Пробинг буферов на ключевых точках пайплайна: фиксируем время прохождения
-// каждого кадра (по PTS) через appsrc → декодер → conv → appsink.
-GstPadProbeReturn GstDecoder::onTsProbe(GstPad* pad, GstPadProbeInfo* info,
-                                        gpointer userData) {
-    GstDecoder* self = static_cast<GstDecoder*>(userData);
-    if (!GST_PAD_PROBE_INFO_BUFFER(info)) return GST_PAD_PROBE_OK;
-    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
-    if (!buf || !GST_BUFFER_PTS_IS_VALID(buf)) return GST_PAD_PROBE_OK;
-    int64_t pts = (int64_t)GST_BUFFER_PTS(buf);
-
-    auto now = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lock(self->m_tsMtx);
-    SampleTs& ts = self->m_sampleTs[pts];
-    if (pad == self->m_appsrcPad) ts.appsrcOut = now;
-    else if (pad == self->m_decPad) ts.decOut = now;
-    else if (pad == self->m_convPad) ts.convOut = now;
-    else if (pad == self->m_sinkPad) ts.sinkIn = now;
-    return GST_PAD_PROBE_OK;
+// Проверка, содержит ли пакет B-срез. Разбирается slice-заголовок VCL NAL:
+//  - H.264: slice_type (ue(v)), B если slice_type % 5 == 1 (типы 1,6);
+//  - H.265: slice_type (ue(v)), B если slice_type == 0.
+// Если разобрать заголовок не удалось — кадр НЕ отбрасываем (conservative).
+bool GstDecoder::hasBSlice(int codecId, const uint8_t* data, int size) {
+    uint8_t rbsp[512];
+    int i = 0;
+    while (i + 3 < size) {
+        // Поиск стартового кода 00 00 01 / 00 00 00 01
+        if (!(data[i] == 0 && data[i + 1] == 0 &&
+              (data[i + 2] == 1 || (data[i + 2] == 0 && data[i + 3] == 1)))) {
+            i++;
+            continue;
+        }
+        int sc = (data[i + 2] == 1) ? 3 : 4;
+        int nalStart = i + sc;
+        int j = nalStart;
+        // Конец NAL — следующий стартовый код или конец пакета
+        while (j + 3 < size) {
+            if (data[j] == 0 && data[j + 1] == 0 &&
+                (data[j + 2] == 1 || (data[j + 2] == 0 && data[j + 3] == 1)))
+                break;
+            j++;
+        }
+        int nalSize = j - nalStart;
+        if (nalSize > 0) {
+            if (codecId == AV_CODEC_ID_H265) {
+                int nalType = (data[nalStart] >> 1) & 0x3f;
+                // VCL (0..9) с достаточным payload: первый флаг + pps_id + slice_type
+                if (nalType <= 9 && nalSize >= 3) {
+                    int n = ebspToRbsp(data + nalStart + 2, nalSize - 2,
+                                       rbsp, (int)sizeof(rbsp));
+                    BitReader br(rbsp, n);
+                    if (!br.readBit()) { i = nalStart; continue; }  // first_slice_segment=0 — не разбираем
+                    if (nalType >= 16) br.readBit();                // no_output_of_prior_pics (IRAP)
+                    br.readUE();                                    // slice_pic_parameter_set_id
+                    uint32_t sliceType = br.readUE();               // 0=B, 1=P, 2=I
+                    if (br.ok() && sliceType == 0) return true;
+                }
+            } else {
+                int nalType = data[nalStart] & 0x1f;
+                // Слайсовые NAL (1 — non-IDR, 5 — IDR)
+                if ((nalType == 1 || nalType == 5) && nalSize >= 2) {
+                    int n = ebspToRbsp(data + nalStart + 1, nalSize - 1,
+                                       rbsp, (int)sizeof(rbsp));
+                    BitReader br(rbsp, n);
+                    br.readUE();                                    // first_mb_in_slice
+                    uint32_t sliceType = br.readUE();
+                    if (br.ok() && (sliceType % 5) == 1) return true;
+                }
+            }
+        }
+        i = nalStart;
+    }
+    return false;
 }
 
 // Обработчик новых кадров из appsink: маппинг NV12 и вызов колбэков
@@ -80,6 +162,23 @@ GstFlowReturn GstDecoder::onNewSample(GstElement* sink, gpointer userData) {
     GstDecoder* self = static_cast<GstDecoder*>(userData);
     GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
     if (!sample) return GST_FLOW_OK;
+
+    // Стабилизатор темпа: кадр, пришедший раньше чем через 30 мс после
+    // предыдущего, отбрасывается — выход ровный, пайплайн не забивается.
+    // Отброшенный кадр «съедает» одну запись FIFO времён пушей, маппинг
+    // push↔кадр остаётся 1:1. Порог 30 мс пропускает до ~33 кадров/с —
+    // для камеры 25 fps (40 мс) и медленнее (10.5 fps, 95 мс) дропов нет.
+    {
+        auto emitNow = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(self->m_mtx);
+        if (self->m_lastEmitAt != std::chrono::steady_clock::time_point{} &&
+            std::chrono::duration<double, std::milli>(emitNow - self->m_lastEmitAt).count() < 30.0) {
+            if (!self->m_pushTimes.empty()) self->m_pushTimes.pop_front();
+            gst_sample_unref(sample);
+            return GST_FLOW_OK;
+        }
+        self->m_lastEmitAt = emitNow;
+    }
 
     GstBuffer* buffer = gst_sample_get_buffer(sample);
     GstCaps* caps = gst_sample_get_caps(sample);
@@ -133,24 +232,6 @@ GstFlowReturn GstDecoder::onNewSample(GstElement* sink, gpointer userData) {
                 std::lock_guard<std::mutex> lock(self->m_mtx);
                 st.queueDepth = (int)self->m_pushTimes.size();
             }
-
-            // Разбивка по элементам пайплайна (по PTS кадра)
-            if (pts > 0) {
-                std::lock_guard<std::mutex> lock(self->m_tsMtx);
-                auto it = self->m_sampleTs.find(pts);
-                if (it != self->m_sampleTs.end()) {
-                    const SampleTs& ts = it->second;
-                    auto pit = self->m_pushTs.find(pts);
-                    if (pit != self->m_pushTs.end()) {
-                        st.appToDecMs = msBetween(ts.decOut, pit->second);
-                        st.decToConvMs = msBetween(ts.convOut, ts.decOut);
-                        st.convToSinkMs = msBetween(ts.sinkIn, ts.convOut);
-                    }
-                    self->m_sampleTs.erase(it);
-                }
-                self->m_pushTs.erase(pts);
-            }
-            // ────────────────────────────────────────────────────────────────
 
             uint8_t* y  = (uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0);
             uint8_t* uv = (uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&frame, 1);
@@ -237,10 +318,13 @@ bool GstDecoder::open(int codecId) {
     }
 
     // ─── Минимальная буферизация для appsrc ──────────────────────────────
+    // is-live=FALSE — как в рабочем e6fd622: live-режим добавлял ~130 мс
+    // (NVDEC ждёт тактовых меток и буферизует ~2.5 кадра до выдачи). Пуши
+    // всё равно идут с темпом сети (RtspReader).
     g_object_set(m_appsrc,
                  "format", GST_FORMAT_TIME,
                  "stream-type", GST_APP_STREAM_TYPE_STREAM,
-                 "is-live", TRUE,
+                 "is-live", FALSE,
                  "block", FALSE,
                  "do-timestamp", FALSE,
                  "max-bytes", 1024 * 1024,  // 1 МБ
@@ -256,9 +340,16 @@ bool GstDecoder::open(int codecId) {
                  NULL);
 
     // ─── Минимальная буферизация для декодера NVDEC ──────────────────────
+    // Свойств "low-latency"/"drop-frame" у nvv4l2decoder нет (проверено
+    // gst-inspect-1.0) — они игнорировались. Реальные рычаги задержки:
+    //  - disable-dpb=TRUE: отключить DPB-reorder (B-кадры уже режутся
+    //    фильтром hasBSlice, переупорядочивание не нужно);
+    //  - enable-max-performance=TRUE: убрать троттлинг GPU-клока NVDEC
+    //    (на Jetson декодер может работать на пониженной частоте);
+    //  - num-extra-surfaces=0: декодер держит только текущий кадр.
     g_object_set(dec,
-                 "low-latency", TRUE,
-                 "drop-frame", TRUE,
+                 "disable-dpb", TRUE,
+                 "enable-max-performance", TRUE,
                  "num-extra-surfaces", 0,
                  "output-io-mode", 4,  // DMABUF
                  NULL);
@@ -297,24 +388,6 @@ bool GstDecoder::open(int codecId) {
         gst_object_unref(bus);
     }
 
-    // Пробы на ключевых точках пайплайна для замера задержек по элементам
-    m_appsrcPad = gst_element_get_static_pad(m_appsrc, "src");
-    m_decPad    = gst_element_get_static_pad(dec, "src");
-    m_convPad   = gst_element_get_static_pad(conv, "src");
-    m_sinkPad   = gst_element_get_static_pad(m_appsink, "sink");
-    if (m_appsrcPad)
-        m_probeAppsrc = gst_pad_add_probe(m_appsrcPad, GST_PAD_PROBE_TYPE_BUFFER,
-                                          onTsProbe, this, nullptr);
-    if (m_decPad)
-        m_probeDec = gst_pad_add_probe(m_decPad, GST_PAD_PROBE_TYPE_BUFFER,
-                                       onTsProbe, this, nullptr);
-    if (m_convPad)
-        m_probeConv = gst_pad_add_probe(m_convPad, GST_PAD_PROBE_TYPE_BUFFER,
-                                        onTsProbe, this, nullptr);
-    if (m_sinkPad)
-        m_probeSink = gst_pad_add_probe(m_sinkPad, GST_PAD_PROBE_TYPE_BUFFER,
-                                        onTsProbe, this, nullptr);
-
     // Запуск пайплайна
     GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -330,6 +403,14 @@ bool GstDecoder::open(int codecId) {
 // Отправка одного закодированного пакета в декодер
 bool GstDecoder::pushPacket(uint8_t* data, int size, int64_t pts) {
     if (!m_pipeline || !data || size <= 0) return false;
+
+    // ─── Изоляция от B-кадров ──────────────────────────────────────────────
+    // Пакет с B-срезом не попадает в декодер вообще: NVDEC не делает reorder,
+    // декодируются только I/P-кадры (frame-by-frame, таргет 1-10 мс).
+    if (hasBSlice(m_codecId, data, size)) {
+        m_droppedB.fetch_add(1);
+        return true;  // отброшен (успешно)
+    }
 
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     {
@@ -348,16 +429,8 @@ bool GstDecoder::pushPacket(uint8_t* data, int size, int64_t pts) {
         }
     }
 
-    // Запись времени push по PTS (для разбивки задержек по элементам)
-    if (pts > 0) {
-        std::lock_guard<std::mutex> lock(m_tsMtx);
-        m_pushTs[pts] = now;
-        while (m_pushTs.size() > 4096) {
-            auto it = m_pushTs.begin();
-            if (it->first >= pts) break;   // не удалять будущие PTS
-            m_pushTs.erase(it);
-        }
-    }
+    // Запись времени push для кадра — в кадре нет времени отправки (пакет ≈
+    // кадр, поэтому используется FIFO m_pushTimes в onNewSample).
 
     GstBuffer* buf = gst_buffer_new_allocate(nullptr, (guint)size, nullptr);
     GstMapInfo map;
@@ -384,20 +457,6 @@ bool GstDecoder::pushPacket(uint8_t* data, int size, int64_t pts) {
 
 // Закрытие декодера: остановка пайплайна и освобождение ресурсов
 void GstDecoder::close() {
-    // Снятие проб
-    auto removeProbe = [](GstPad*& pad, gulong& id) {
-        if (pad) {
-            if (id) gst_pad_remove_probe(pad, id);
-            gst_object_unref(pad);
-            pad = nullptr;
-            id = 0;
-        }
-    };
-    removeProbe(m_appsrcPad, m_probeAppsrc);
-    removeProbe(m_decPad, m_probeDec);
-    removeProbe(m_convPad, m_probeConv);
-    removeProbe(m_sinkPad, m_probeSink);
-
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
         gst_object_unref(m_pipeline);
@@ -409,13 +468,10 @@ void GstDecoder::close() {
         std::lock_guard<std::mutex> lock(m_mtx);
         m_pushTimes.clear();
         m_seenKeyframe = false;
+        m_lastEmitAt = std::chrono::steady_clock::time_point{};
     }
-    {
-        std::lock_guard<std::mutex> lock(m_tsMtx);
-        m_sampleTs.clear();
-        m_pushTs.clear();
-        m_lastSampleAt = std::chrono::steady_clock::time_point{};
-    }
+    m_droppedB.store(0);
+    m_lastSampleAt = std::chrono::steady_clock::time_point{};
     m_lastPushBlockMs.store(0.0);
     m_failed.store(false);
 }

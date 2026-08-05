@@ -9,6 +9,8 @@ volatile std::sig_atomic_t g_running = 1;
 
 // Флаги режимов работы
 bool g_benchmarkMode = false;      // Режим бенчмарка (без отображения)
+int g_winWidth  = 1600;            // Размер окна отображения (по умолчанию)
+int g_winHeight = 900;
 
 // Обработчик сигналов SIGINT/SIGTERM — корректное завершение
 static void signalHandler(int) {
@@ -49,11 +51,14 @@ static void printUsage(const char* progname) {
     std::cout << "Использование: " << progname << " [опции]" << std::endl;
     std::cout << "Опции:" << std::endl;
     std::cout << "  -b, --benchmark    Режим бенчмарка (без отображения окна)" << std::endl;
+    std::cout << "  -w, --width W      Ширина окна отображения (по умолчанию 1600)" << std::endl;
+    std::cout << "  -H, --height H     Высота окна отображения (по умолчанию 900)" << std::endl;
     std::cout << "  -h, --help         Показать эту справку" << std::endl;
     std::cout << std::endl;
     std::cout << "Примеры:" << std::endl;
     std::cout << "  " << progname << "                      # Обычный режим с отображением" << std::endl;
     std::cout << "  " << progname << " -b                  # Режим бенчмарка (без окна)" << std::endl;
+    std::cout << "  " << progname << " --width 1280 --height 720   # Окно 1280x720" << std::endl;
     std::cout << "  " << progname << " --benchmark         # Бенчмарк с логированием" << std::endl;
 }
 
@@ -64,17 +69,29 @@ int main(int argc, char* argv[]) {
 
     // ─── Разбор аргументов командной строки ──────────────────────────────────
     static struct option long_options[] = {
-        {"benchmark", no_argument, 0, 'b'},
-        {"help",      no_argument, 0, 'h'},
+        {"benchmark", no_argument,       0, 'b'},
+        {"width",     required_argument, 0, 'w'},
+        {"height",    required_argument, 0, 'H'},
+        {"help",      no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "bh", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "bw:H:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'b':
                 g_benchmarkMode = true;
                 break;
+            case 'w': {
+                int v = std::atoi(optarg);
+                if (v > 0) g_winWidth = v;
+                break;
+            }
+            case 'H': {
+                int v = std::atoi(optarg);
+                if (v > 0) g_winHeight = v;
+                break;
+            }
             case 'h':
                 printUsage(argv[0]);
                 return 0;
