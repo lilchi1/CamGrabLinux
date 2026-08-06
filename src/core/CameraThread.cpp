@@ -6,6 +6,7 @@
 // при чистом декоде NVDEC ~5-17 мс.
 #include "headers.h"
 #include "Display.h"
+#include "InferPipeline.h"
 #include <X11/keysym.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -110,6 +111,42 @@ void cameraThread(std::string url, int camIdx) {
     double fps = 0.0;
     std::mutex statsMtx;
 
+    // ─── Детекция YOLO (TensorRT) ────────────────────────────────────────────
+    // Инференс выполняется в потоке отображения (после показа кадра). Если
+    // .engine не задан или инициализация не удалась — работаем без детекции.
+    std::unique_ptr<InferPipeline> infer;
+    int infProcessed = 0;   // кадров прогнано через детекцию
+    int infDetFrames = 0;   // кадров с хотя бы одним объектом
+    int infTotalDets = 0;   // всего боксов
+    if (!g_modelPath.empty()) {
+        infer = std::make_unique<InferPipeline>();
+        const int numClasses = g_classNames.empty() ? 80 : (int)g_classNames.size();
+        bool ok = false;
+        if (g_yolov2Mode) {
+            YoloV2Config cfg;
+            cfg.grid = g_yolov2Grid;
+            cfg.stride = 32;
+            cfg.numAnchors = (int)g_yolov2Anchors.size() / 2;
+            cfg.anchors = g_yolov2Anchors;
+            const int inSize = g_modelInSize > 0 ? g_modelInSize : cfg.grid * cfg.stride;
+            ok = infer->initV2(g_modelPath, inSize, inSize, numClasses, cfg,
+                               g_confThresh, g_nmsThresh);
+        } else {
+            const int inSize = g_modelInSize > 0 ? g_modelInSize : 640;
+            ok = infer->init(g_modelPath, inSize, inSize, numClasses, 8400,
+                             g_confThresh, g_nmsThresh);
+        }
+        if (!ok) {
+            logWrite("WARN", url, "Инициализация детекции не удалась — работаем без неё");
+            infer.reset();
+        } else {
+            logWrite("INFO", url, "Детекция YOLO: " + g_modelPath +
+                                  " (классов=" + std::to_string(numClasses) +
+                                  ", conf=" + std::to_string(g_confThresh) +
+                                  ", nms=" + std::to_string(g_nmsThresh) + ")");
+        }
+    }
+
     // ─── Асинхронное отображение ─────────────────────────────────────────────
     // Колбэк кадра (поток GStreamer) только копирует NV12 в ограниченную очередь
     // (drop-oldest: при переполнении выбрасывается старый кадр, показывается
@@ -141,6 +178,25 @@ void cameraThread(std::string url, int camIdx) {
                     dispQueue.pop_front();
                 }
                 display->showFrame(f.y.data(), f.uv.data(), f.w, f.h, f.sy, f.suv);
+
+                // Детекция на показанном кадре: аплоад NV12 на GPU → инференс →
+                // оверлей боксов. Координаты детекций — в пикселях исходного кадра.
+                if (infer && infer->ready()) {
+                    Detections dets = infer->runHostNv12(f.y.data(), f.uv.data(),
+                                                         f.w, f.h, f.sy, f.suv, -1);
+                    infProcessed++;
+                    if (!dets.empty()) {
+                        display->showDetections(dets, g_classNames, f.w, f.h);
+                        infDetFrames++;
+                        infTotalDets += (int)dets.size();
+                    }
+                    if (infProcessed % 150 == 0 && infDetFrames > 0) {
+                        logWrite("INFO", url, "DET: кадров с объектами=" +
+                                 std::to_string(infDetFrames) + "/" +
+                                 std::to_string(infProcessed) +
+                                 ", боксов=" + std::to_string(infTotalDets));
+                    }
+                }
             }
         });
 

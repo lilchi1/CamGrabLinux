@@ -36,6 +36,19 @@ pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0)
 pkg_check_modules(GSTAPP     REQUIRED gstreamer-app-1.0)
 pkg_check_modules(GSTVIDEO   REQUIRED gstreamer-video-1.0)
 
+# CV-CUDA (препроцессинг для YOLO: NV12→RGB→Resize→NCHW).
+# nvcv_types должен быть найден ДО cvcuda (cvcuda ссылается на его target).
+set(cvcuda_DIR "/opt/nvidia/cvcuda0/lib/cmake/cvcuda")
+set(nvcv_types_DIR "/opt/nvidia/cvcuda0/lib/cmake/nvcv_types")
+find_package(nvcv_types CONFIG REQUIRED)
+find_package(cvcuda CONFIG REQUIRED)
+
+# TensorRT (запуск .engine YOLO)
+find_library(NVINFER_LIB nvinfer PATHS /usr/lib/aarch64-linux-gnu REQUIRED)
+
+# CUDA::cudart_static (требует target cvcuda)
+find_package(CUDAToolkit REQUIRED)
+
 add_executable(rtsp_decoder
     src/main.cpp
     src/core/Globals.cpp
@@ -47,6 +60,12 @@ add_executable(rtsp_decoder
     src/display/Display.cpp
     src/display/CudaDisplay.cpp
     src/display/CudaKernels.cu
+
+    src/inference/CvcudaPreprocessor.cpp
+    src/inference/YoloPostprocess.cpp
+    src/inference/YoloV2Postprocess.cpp
+    src/inference/TensorRtInfer.cpp
+    src/inference/InferPipeline.cpp
 )
 
 target_include_directories(rtsp_decoder PRIVATE
@@ -74,6 +93,9 @@ target_link_libraries(rtsp_decoder PRIVATE
     ${GSTREAMER_LIBRARIES}
     ${GSTAPP_LIBRARIES}
     ${GSTVIDEO_LIBRARIES}
+    cvcuda
+    nvcv_types
+    ${NVINFER_LIB}
     pthread
     dl
     X11
@@ -82,6 +104,7 @@ target_link_libraries(rtsp_decoder PRIVATE
 target_link_directories(rtsp_decoder PRIVATE
     /usr/lib/aarch64-linux-gnu
     /usr/local/cuda/lib64
+    /opt/nvidia/cvcuda0/lib
     ${LIBAVCODEC_LIBRARY_DIRS}
     ${LIBAVFORMAT_LIBRARY_DIRS}
     ${LIBAVUTIL_LIBRARY_DIRS}

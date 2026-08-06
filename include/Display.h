@@ -3,12 +3,15 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <deque>
 #include <mutex>
 #include <utility>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <sys/shm.h>
+
+#include "Detection.h"
 
 class CudaDisplay;
 
@@ -37,6 +40,13 @@ public:
     void showFrame(uint8_t* yPlane, uint8_t* uvPlane,
                    int srcW, int srcH,
                    int strideY, int strideUV);
+
+    // Оверлей детекций поверх последнего showFrame(). Координаты боксов —
+    // в пикселях исходного кадра (srcW x srcH); масштаб/смещение те же,
+    // что в showFrame(). classNames — имена классов (по индексу classId).
+    void showDetections(const Detections& dets,
+                        const std::vector<std::string>& classNames,
+                        int srcW, int srcH);
 
     // X11-хендл окна (для nv3dsink set_window_handle)
     ::Display* xDisplay() const { return m_display; }

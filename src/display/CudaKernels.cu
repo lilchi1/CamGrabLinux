@@ -2,6 +2,8 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+#include "YoloPostprocess.h"
+
 // Коэффициенты BT.601 limited-range (целочисленная арифметика)
 // R = 298*(Y-16) + 409*(V-128) + 128 >> 8
 // G = 298*(Y-16) - 100*(U-128) - 208*(V-128) + 128 >> 8
@@ -126,6 +128,164 @@ __global__ void nv12ToBgrKernel(const uint8_t* yPlane, const uint8_t* uvPlane,
     }
 }
 
+// Ядро NV12→RGB8 (interleaved, без масштабирования), 2×2 блок на поток.
+// Используется для препроцессинга YOLO (CV-CUDA не умеет напрямую читать NV12).
+__global__ void nv12ToRgbKernel(const uint8_t* yPlane, const uint8_t* uvPlane,
+                                int srcStride, int width, int height,
+                                uint8_t* dst, int dstStride) {
+    int bx = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
+    int by = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
+    if (bx >= width || by >= height) return;
+
+    int uvIdx = (by / 2) * srcStride + (bx / 2) * 2;
+    uint8_t uVal = uvPlane[uvIdx];
+    uint8_t vVal = uvPlane[uvIdx + 1];
+
+    for (int dy = 0; dy < 2 && (by + dy) < height; dy++) {
+        for (int dx = 0; dx < 2 && (bx + dx) < width; dx++) {
+            uint8_t yVal = yPlane[(by + dy) * srcStride + bx + dx];
+            uint8_t b, g, r;
+            nv12ToBgrPixel(yVal, uVal, vVal, b, g, r);
+            int outIdx = ((by + dy) * dstStride + (bx + dx) * 3);
+            dst[outIdx + 0] = r;
+            dst[outIdx + 1] = g;
+            dst[outIdx + 2] = b;
+        }
+    }
+}
+
+// Ядро letterbox-паддинг + normalize: RGB8 (rgbW x rgbH) → NCHW F32 [1,3,outH,outW].
+// Контент размещается с отступом (padX, padY), фон — значение 114 (как в YOLO),
+// масштаб 1/255. Строки/каналы индексируются через явные шаги (элементы).
+__global__ void letterboxNchwKernel(const uint8_t* rgb, int rgbStride, int rgbW, int rgbH,
+                                    float* dst, int cStride, int hStride, int wStride,
+                                    int outW, int outH, int padX, int padY) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= outW || y >= outH) return;
+
+    const float border = 114.0f / 255.0f;
+    float r, g, b;
+    int sx = x - padX, sy = y - padY;
+    if (sx >= 0 && sx < rgbW && sy >= 0 && sy < rgbH) {
+        const uint8_t* p = rgb + sy * rgbStride + sx * 3;
+        r = p[0] / 255.0f; g = p[1] / 255.0f; b = p[2] / 255.0f;
+    } else {
+        r = g = b = border;
+    }
+    int base = y * hStride + x * wStride;
+    dst[cStride + base] = r;
+    dst[2 * cStride + base] = g;
+    dst[0 * cStride + base] = b;
+}
+
+// Ядро декода YOLOv8/v11/v12 (anchor-free): NCHW [1, (4+nc), anchors].
+// Каждый поток обрабатывает один anchor. Выбирает лучший класс, фильтрует по
+// порогу и маппит бокс из координат входа модели в исходный кадр.
+__device__ __forceinline__ void yoloBestClass(const float* output, int anchor, int anchors,
+                                              int channels, int& cls, float& score) {
+    score = -1.0f;
+    cls = -1;
+    for (int c = 4; c < channels; c++) {
+        float s = output[c * anchors + anchor];
+        if (s > score) { score = s; cls = c - 4; }
+    }
+}
+
+__global__ void yoloDecodeKernel(const float* output, int channels, int anchors,
+                                 float confThresh, float scaleX, float scaleY, int padX, int padY,
+                                 int inW, int inH, YoloCandidate* cands, int* counter, int maxCands) {
+    int a = blockIdx.x * blockDim.x + threadIdx.x;
+    if (a >= anchors) return;
+
+    float cx = output[0 * anchors + a];
+    float cy = output[1 * anchors + a];
+    float w  = output[2 * anchors + a];
+    float h  = output[3 * anchors + a];
+    if (w <= 0.0f || h <= 0.0f) return;
+
+    int cls;
+    float score;
+    yoloBestClass(output, a, anchors, channels, cls, score);
+    if (cls < 0 || score < confThresh) return;
+
+    float sx1 = (cx - w * 0.5f - padX) / scaleX;
+    float sy1 = (cy - h * 0.5f - padY) / scaleY;
+    float sx2 = (cx + w * 0.5f - padX) / scaleX;
+    float sy2 = (cy + h * 0.5f - padY) / scaleY;
+    if (sx1 < 0.0f) sx1 = 0.0f;
+    if (sy1 < 0.0f) sy1 = 0.0f;
+    if (sx2 > (float)inW) sx2 = (float)inW;
+    if (sy2 > (float)inH) sy2 = (float)inH;
+    if (sx2 <= sx1 || sy2 <= sy1) return;
+
+    int idx = atomicAdd(counter, 1);
+    if (idx >= maxCands) return;
+    cands[idx] = {sx1, sy1, sx2, sy2, score, cls};
+}
+
+// ─── Декод YOLOv2 (anchor-based, YAD2K/darknet): NCHW [1, C, grid, grid] ─────
+// C = numAnchors * (5 + numClasses); для модели 608x608: grid=19, C=425, stride=32.
+// Каждый поток обрабатывает один якорь одной клетки сетки:
+//   cx = (sigmoid(tx) + gx) * stride,  cy = (sigmoid(ty) + gy) * stride
+//   w  = anchor_w * exp(tw),           h  = anchor_h * exp(th)
+//   score = sigmoid(obj) * max_class(sigmoid(cls))
+// Якоря (dAnchors) задаются парами (w,h) в пикселях входа модели.
+__global__ void yoloV2DecodeKernel(const float* output, int grid, int numAnchors,
+                                   int numClasses, const float* dAnchors, int stride,
+                                   float confThresh, float scaleX, float scaleY,
+                                   int padX, int padY, int inW, int inH,
+                                   YoloCandidate* cands, int* counter, int maxCands) {
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = grid * grid * numAnchors;
+    if (k >= total) return;
+
+    int a = k % numAnchors;         // якорь
+    int gc = k / numAnchors;        // клетка
+    int gx = gc % grid;
+    int gy = gc / grid;
+
+    const int hw = grid * grid;
+    const int base = gy * grid + gx;   // каналы-major: index = c*hw + base
+
+    const float tx = output[0 * hw + base];
+    const float ty = output[1 * hw + base];
+    const float tw = output[2 * hw + base];
+    const float th = output[3 * hw + base];
+    const float to = output[4 * hw + base];
+
+    const float so = 1.0f / (1.0f + expf(-to));
+    if (so < confThresh) return;
+
+    float cx = (1.0f / (1.0f + expf(-tx)) + gx) * stride;
+    float cy = (1.0f / (1.0f + expf(-ty)) + gy) * stride;
+    float w  = dAnchors[2 * a]     * expf(tw);
+    float h  = dAnchors[2 * a + 1] * expf(th);
+
+    int cls = -1;
+    float best = -1.0f;
+    for (int c = 5; c < 5 + numClasses; c++) {
+        float s = 1.0f / (1.0f + expf(-output[c * hw + base]));
+        if (s > best) { best = s; cls = c - 5; }
+    }
+    float score = so * best;
+    if (cls < 0 || score < confThresh) return;
+
+    float sx1 = (cx - w * 0.5f - padX) / scaleX;
+    float sy1 = (cy - h * 0.5f - padY) / scaleY;
+    float sx2 = (cx + w * 0.5f - padX) / scaleX;
+    float sy2 = (cy + h * 0.5f - padY) / scaleY;
+    if (sx1 < 0.0f) sx1 = 0.0f;
+    if (sy1 < 0.0f) sy1 = 0.0f;
+    if (sx2 > (float)inW) sx2 = (float)inW;
+    if (sy2 > (float)inH) sy2 = (float)inH;
+    if (sx2 <= sx1 || sy2 <= sy1) return;
+
+    int idx = atomicAdd(counter, 1);
+    if (idx >= maxCands) return;
+    cands[idx] = {sx1, sy1, sx2, sy2, score, cls};
+}
+
 // ─── C-обёртки (вызываются из CudaDisplay.cpp) ───────────────────────────────
 
 extern "C" {
@@ -151,6 +311,59 @@ cudaError_t cudaNv12ToBgr(const uint8_t* yPlane, const uint8_t* uvPlane,
               ((height / 2) + block.y - 1) / block.y);
     nv12ToBgrKernel<<<grid, block, 0, stream>>>(yPlane, uvPlane, srcStride, width, height,
                                                  d_dst, dstStride);
+    return cudaGetLastError();
+}
+
+// Конвертация NV12→RGB8 (interleaved) без масштабирования
+cudaError_t cudaNv12ToRgb(const uint8_t* yPlane, const uint8_t* uvPlane,
+                          int srcStride, int width, int height,
+                          uint8_t* d_dst, int dstStride, cudaStream_t stream) {
+    dim3 block(16, 16);
+    dim3 grid(((width / 2) + block.x - 1) / block.x,
+              ((height / 2) + block.y - 1) / block.y);
+    nv12ToRgbKernel<<<grid, block, 0, stream>>>(yPlane, uvPlane, srcStride, width, height,
+                                                d_dst, dstStride);
+    return cudaGetLastError();
+}
+
+// Letterbox-паддинг + normalize → NCHW F32
+cudaError_t cudaLetterboxNchw(const uint8_t* rgb, int rgbStride, int rgbW, int rgbH,
+                              float* d_out, int cStride, int hStride, int wStride,
+                              int outW, int outH, int padX, int padY, cudaStream_t stream) {
+    dim3 block(16, 16);
+    dim3 grid((outW + block.x - 1) / block.x, (outH + block.y - 1) / block.y);
+    letterboxNchwKernel<<<grid, block, 0, stream>>>(rgb, rgbStride, rgbW, rgbH,
+                                                    d_out, cStride, hStride, wStride,
+                                                    outW, outH, padX, padY);
+    return cudaGetLastError();
+}
+
+// Декод YOLO-выхода → кандидаты в координатах исходного кадра
+cudaError_t cudaYoloDecode(const float* output, int channels, int anchors,
+                           float confThresh, float scaleX, float scaleY, int padX, int padY,
+                           int inW, int inH, YoloCandidate* d_cands, int* d_counter, int maxCands,
+                           cudaStream_t stream) {
+    const int threads = 256;
+    const int blocks = (anchors + threads - 1) / threads;
+    yoloDecodeKernel<<<blocks, threads, 0, stream>>>(output, channels, anchors, confThresh,
+                                                     scaleX, scaleY, padX, padY, inW, inH,
+                                                     d_cands, d_counter, maxCands);
+    return cudaGetLastError();
+}
+
+// Декод YOLOv2-выхода (NCHW [1, C, grid, grid]) → кандидаты в исходном кадре
+cudaError_t cudaYoloV2Decode(const float* output, int grid, int numAnchors, int numClasses,
+                             const float* dAnchors, int stride, float confThresh,
+                             float scaleX, float scaleY, int padX, int padY,
+                             int inW, int inH, YoloCandidate* d_cands, int* d_counter,
+                             int maxCands, cudaStream_t stream) {
+    const int total = grid * grid * numAnchors;
+    const int threads = 256;
+    const int blocks = (total + threads - 1) / threads;
+    yoloV2DecodeKernel<<<blocks, threads, 0, stream>>>(output, grid, numAnchors, numClasses,
+                                                       dAnchors, stride, confThresh,
+                                                       scaleX, scaleY, padX, padY, inW, inH,
+                                                       d_cands, d_counter, maxCands);
     return cudaGetLastError();
 }
 

@@ -17,3 +17,57 @@ decode_times_*.csv
 logs/
 .env
 build/
+
+# YOLO: большие файлы моделей и вендоренный Python-пакет ultralytics
+yolo/*.h5
+yolo/*.onnx
+yolo/*.engine
+yolo/ultralytics/
+yolo/output_raw.npy
+Build/rtsp_decoder
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Test images
+yolo/annotated.jpg
+yolo/test*.jpg
+yolo/output*.npy
+
+# Model files
+yolo/*.keras
+yolo/*.h5
+yolo/*.engine
+yolo/*.onnx
+
+# Binary files
+Build/
+*.o
+*.a
+*.so
+rtsp_decoder
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Test images
+yolo/annotated.jpg
+yolo/test*.jpg
+yolo/output*.npy
+
+# Model files
+yolo/*.keras
+yolo/*.h5
+yolo/*.engine
+yolo/*.onnx
+
+# Binary files
+Build/
+*.o
+*.a
+*.so
+rtsp_decoder

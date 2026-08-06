@@ -1,5 +1,6 @@
 // main.cpp — Точка входа. Создаёт поток на каждую камеру, управляет динамическим добавлением.
 #include "headers.h"
+#include "Detection.h"
 #include <poll.h>
 #include <unistd.h>
 #include <getopt.h>
@@ -12,6 +13,26 @@ bool g_benchmarkMode = false;      // Режим бенчмарка (без от
 int g_winWidth  = 1600;            // Размер окна отображения (по умолчанию)
 int g_winHeight = 900;
 std::string g_displayMode = "xvimagesink"; // Режим отображения: xvimagesink (default) | cuda
+
+// Детекция YOLO (TensorRT engine, вход 640×640)
+std::string g_modelPath;                              // путь к .engine (пусто = без детекции)
+std::string g_labelsPath;                             // файл имён классов
+float g_confThresh = 0.35f;                           // порог уверенности
+float g_nmsThresh = 0.45f;                            // порог NMS
+std::vector<std::string> g_classNames;                // имена классов (loadClassNames)
+
+// Детекция YOLOv2 (anchor-based, Keras-модель из yolo/yolo_model_complete.h5).
+// Выход NCHW [1, C, grid, grid], C = numAnchors*(5+nc). Якоря — в пикселях входа.
+bool g_yolov2Mode = false;
+int g_yolov2Grid = 19;                                // сетка выхода (608/32 = 19)
+std::vector<float> g_yolov2Anchors = {                // YAD2K COCO (пиксели входа 608/416)
+    18.32736f, 21.67632f,
+    59.98272f, 66.00096f,
+    106.82976f, 175.17888f,
+    252.25024f, 112.88896f,
+    312.65664f, 293.38496f,
+};
+int g_modelInSize = 0;                                // размер входа модели (0 = авто)
 
 // Обработчик сигналов SIGINT/SIGTERM — корректное завершение
 static void signalHandler(int) {
@@ -55,6 +76,15 @@ static void printUsage(const char* progname) {
     std::cout << "  -w, --width W      Ширина окна отображения (по умолчанию 1600)" << std::endl;
     std::cout << "  -H, --height H     Высота окна отображения (по умолчанию 900)" << std::endl;
     std::cout << "  -d, --display M    Режим отображения: xvimagesink (по умолчанию) | cuda" << std::endl;
+    std::cout << "  -m, --model PATH   TensorRT .engine (YOLOv8/v11/v12, вход 640x640)" << std::endl;
+    std::cout << "  -l, --labels PATH  Файл имён классов (по одному в строке, COCO=80)" << std::endl;
+    std::cout << "  -c, --conf F       Порог уверенности (по умолчанию 0.35)" << std::endl;
+    std::cout << "  -n, --nms F        Порог NMS (по умолчанию 0.45)" << std::endl;
+    std::cout << "  --yolov2           YOLOv2-декод (anchor-based, Keras h5 → .engine)" << std::endl;
+    std::cout << "  --v2-grid N        Сетка выхода YOLOv2 (по умолчанию 19 = 608/32)" << std::endl;
+    std::cout << "  --v2-anchors L     Якоря YOLOv2, пары w,h в пикселях (по умолчанию COCO YAD2K)" << std::endl;
+    std::cout << "  --in-size N        Размер входа модели (по умолчанию: 640 для v8/11/12," << std::endl;
+    std::cout << "                       608 = grid*32 для YOLOv2)" << std::endl;
     std::cout << "  -h, --help         Показать эту справку" << std::endl;
     std::cout << std::endl;
     std::cout << "Примеры:" << std::endl;
@@ -63,6 +93,8 @@ static void printUsage(const char* progname) {
     std::cout << "  " << progname << " --width 1280 --height 720   # Окно 1280x720" << std::endl;
     std::cout << "  " << progname << " --display cuda       # Фолбэк: рендер CUDA + XPutImage" << std::endl;
     std::cout << "  " << progname << " --benchmark         # Бенчмарк с логированием" << std::endl;
+    std::cout << "  " << progname << " --model yolo.engine --labels coco.names --conf 0.4 --nms 0.5  # Детекция YOLO" << std::endl;
+    std::cout << "  " << progname << " --model yolo_v2.engine --labels yolo/coco.names --yolov2  # YOLOv2 (608x608, COCO)" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -76,12 +108,20 @@ int main(int argc, char* argv[]) {
         {"width",     required_argument, 0, 'w'},
         {"height",    required_argument, 0, 'H'},
         {"display",   required_argument, 0, 'd'},
+        {"model",     required_argument, 0, 'm'},
+        {"labels",    required_argument, 0, 'l'},
+        {"conf",      required_argument, 0, 'c'},
+        {"nms",       required_argument, 0, 'n'},
+        {"yolov2",    no_argument,       0, 1000},
+        {"v2-grid",   required_argument, 0, 1001},
+        {"v2-anchors", required_argument, 0, 1002},
+        {"in-size",   required_argument, 0, 1003},
         {"help",      no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "bw:H:d:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "bw:H:d:m:l:c:n:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'b':
                 g_benchmarkMode = true;
@@ -107,12 +147,65 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             }
+            case 'm':
+                g_modelPath = optarg;
+                break;
+            case 'l':
+                g_labelsPath = optarg;
+                break;
+            case 'c': {
+                float v = (float)std::atof(optarg);
+                if (v > 0.0f && v < 1.0f) g_confThresh = v;
+                break;
+            }
+            case 'n': {
+                float v = (float)std::atof(optarg);
+                if (v > 0.0f && v < 1.0f) g_nmsThresh = v;
+                break;
+            }
+            case 1000:
+                g_yolov2Mode = true;
+                break;
+            case 1001: {
+                int v = std::atoi(optarg);
+                if (v > 0) g_yolov2Grid = v;
+                break;
+            }
+            case 1002: {
+                std::vector<float> anchors;
+                std::stringstream ss(optarg);
+                std::string item;
+                while (std::getline(ss, item, ',')) {
+                    float v = (float)std::atof(item.c_str());
+                    if (v > 0.0f) anchors.push_back(v);
+                }
+                if (anchors.size() >= 2 && (anchors.size() % 2) == 0)
+                    g_yolov2Anchors = anchors;
+                else
+                    std::cerr << "Предупреждение: --v2-anchors должен содержать пары w,h > 0"
+                              << std::endl;
+                break;
+            }
+            case 1003: {
+                int v = std::atoi(optarg);
+                if (v > 0) g_modelInSize = v;
+                break;
+            }
             case 'h':
                 printUsage(argv[0]);
                 return 0;
             default:
                 printUsage(argv[0]);
                 return 1;
+        }
+    }
+
+    // Загрузка имён классов для детекции
+    if (!g_labelsPath.empty()) {
+        g_classNames = loadClassNames(g_labelsPath);
+        if (g_classNames.empty()) {
+            std::cerr << "Ошибка: не удалось загрузить имена классов из " << g_labelsPath << std::endl;
+            return 1;
         }
     }
 
@@ -127,6 +220,24 @@ int main(int argc, char* argv[]) {
         std::cout << "🖥️  ОБЫЧНЫЙ РЕЖИМ (с отображением, режим: " << g_displayMode << ")" << std::endl;
     }
     std::cout << "📊 Логирование: ВКЛ (CSV)" << std::endl;
+    if (!g_modelPath.empty()) {
+        int numClasses = g_classNames.empty() ? 80 : (int)g_classNames.size();
+        if (g_yolov2Mode) {
+            std::cout << "🧠 ДЕТЕКЦИЯ YOLOv2 (anchor-based): " << g_modelPath
+                      << " (классов=" << numClasses
+                      << ", сетка=" << g_yolov2Grid
+                      << ", якорей=" << (int)(g_yolov2Anchors.size() / 2)
+                      << ", conf=" << g_confThresh
+                      << ", nms=" << g_nmsThresh << ")" << std::endl;
+        } else {
+            std::cout << "🧠 ДЕТЕКЦИЯ YOLO: " << g_modelPath
+                      << " (классов=" << numClasses
+                      << ", conf=" << g_confThresh
+                      << ", nms=" << g_nmsThresh << ")" << std::endl;
+        }
+    } else {
+        std::cout << "🧠 Детекция YOLO: ВЫКЛ (укажите --model для включения)" << std::endl;
+    }
     std::cout << std::endl;
 
     // Включить логирование скорости декодирования (CSV) - всегда включено
