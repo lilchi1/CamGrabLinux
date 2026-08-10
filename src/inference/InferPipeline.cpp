@@ -56,18 +56,22 @@ bool InferPipeline::initCommon(const std::string& enginePath, int outW, int outH
         return false;
     }
 
-    // Вход модели = выход препроцессора (NCHW F32, тот же размер).
+    // Привязка адресов всех I/O-тензоров (TRT 10 требует их до enqueueV3):
+    // вход = выход препроцессора (NCHW F32), выходы = свои выделенные буферы.
     for (const TrtBinding& b : m_trt.bindings())
     {
-        if (b.isInput)
+        void* ptr = b.isInput ? const_cast<float*>(m_pp.nchwOutput()) : b.devicePtr;
+        if (!ptr)
         {
-            if (!m_trt.setTensorAddress(b.name, const_cast<float*>(m_pp.nchwOutput())))
-            {
-                fprintf(stderr, "[InferPipeline] setTensorAddress(%s) failed\n", b.name.c_str());
-                cleanup();
-                return false;
-            }
-            break;
+            fprintf(stderr, "[InferPipeline] нет буфера для тензора %s\n", b.name.c_str());
+            cleanup();
+            return false;
+        }
+        if (!m_trt.setTensorAddress(b.name, ptr))
+        {
+            fprintf(stderr, "[InferPipeline] setTensorAddress(%s) failed\n", b.name.c_str());
+            cleanup();
+            return false;
         }
     }
     return true;

@@ -36,17 +36,14 @@ public:
     // Закрытие окна и освобождение ресурсов
     void close();
 
-    // Отображение NV12 кадра (конвертация + масштабирование через CUDA)
+    // Отображение NV12 кадра (конвертация + масштабирование через CUDA).
+    // dets/classNames — оверлей детекций: боксы рисуются в кадре (в display.cpp)
+    // перед выводом в окно. Координаты боксов — в пикселях исходного кадра.
     void showFrame(uint8_t* yPlane, uint8_t* uvPlane,
                    int srcW, int srcH,
-                   int strideY, int strideUV);
-
-    // Оверлей детекций поверх последнего showFrame(). Координаты боксов —
-    // в пикселях исходного кадра (srcW x srcH); масштаб/смещение те же,
-    // что в showFrame(). classNames — имена классов (по индексу classId).
-    void showDetections(const Detections& dets,
-                        const std::vector<std::string>& classNames,
-                        int srcW, int srcH);
+                   int strideY, int strideUV,
+                   const Detections& dets = {},
+                   const std::vector<std::string>& classNames = {});
 
     // X11-хендл окна (для nv3dsink set_window_handle)
     ::Display* xDisplay() const { return m_display; }
@@ -90,4 +87,10 @@ private:
     void allocateImage(int width, int height);  // Выделение XImage (SHM или обычный)
     void destroyImage();                         // Уничтожение XImage и SHM
     void enqueueKey(int keysym, bool pressed);   // Добавление клавиши в очередь
+
+    // Рисование боксов детекций в m_image (вызывать с захваченным m_xMtx).
+    // Координаты боксов — в пикселях исходного кадра srcW x srcH.
+    void drawDetections(const Detections& dets,
+                        const std::vector<std::string>& classNames,
+                        int srcW, int srcH);
 };

@@ -247,12 +247,14 @@ __global__ void yoloV2DecodeKernel(const float* output, int grid, int numAnchors
 
     const int hw = grid * grid;
     const int base = gy * grid + gx;   // каналы-major: index = c*hw + base
+    // Каналы сгруппированы по якорям: блок якоря a начинается с a*(5+numClasses).
+    const int off = a * (5 + numClasses);
 
-    const float tx = output[0 * hw + base];
-    const float ty = output[1 * hw + base];
-    const float tw = output[2 * hw + base];
-    const float th = output[3 * hw + base];
-    const float to = output[4 * hw + base];
+    const float tx = output[(0 + off) * hw + base];
+    const float ty = output[(1 + off) * hw + base];
+    const float tw = output[(2 + off) * hw + base];
+    const float th = output[(3 + off) * hw + base];
+    const float to = output[(4 + off) * hw + base];
 
     const float so = 1.0f / (1.0f + expf(-to));
     if (so < confThresh) return;
@@ -265,7 +267,7 @@ __global__ void yoloV2DecodeKernel(const float* output, int grid, int numAnchors
     int cls = -1;
     float best = -1.0f;
     for (int c = 5; c < 5 + numClasses; c++) {
-        float s = 1.0f / (1.0f + expf(-output[c * hw + base]));
+        float s = 1.0f / (1.0f + expf(-output[(c + off) * hw + base]));
         if (s > best) { best = s; cls = c - 5; }
     }
     float score = so * best;

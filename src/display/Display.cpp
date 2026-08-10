@@ -275,10 +275,13 @@ bool DisplayWindow::popKeyEvent(int& keysym, bool& pressed) {
     return true;
 }
 
-// Отображение NV12 кадра: конвертация на GPU → копирование в XImage → вывод в окно
+// Отображение NV12 кадра: конвертация на GPU → копирование в XImage → вывод в окно.
+// Оверлей детекций (боксы/подписи) рисуется в XImage перед выводом.
 void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
                               int srcW, int srcH,
-                              int strideY, int strideUV) {
+                              int strideY, int strideUV,
+                              const Detections& dets,
+                              const std::vector<std::string>& classNames) {
     if (m_overlayOnly) return;  // рендер внешний (nv3dsink)
     if (!m_image || !m_image->data || !m_cudaReady || !m_cuda) return;
 
@@ -316,6 +319,10 @@ void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
             memcpy(dstRowPtr, srcRow, outW * 4);
         }
 
+        // Оверлей детекций ИИ поверх кадра (тот же буфер XImage)
+        if (!dets.empty())
+            drawDetections(dets, classNames, srcW, srcH);
+
         // Вывод кадра в окно: MIT-SHM (zero-copy) или обычный XPutImage
         if (m_useShm)
             pXShmPutImage(m_display, m_window, m_gc, m_image,
@@ -336,9 +343,9 @@ void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
     // ─── Конец критической секции ──────────────────────────────────────────
 }
 
-// ─── Оверлей детекций ───────────────────────────────────────────────────────
-// Рисование в XImage (BGRA 32bpp). Функции предполагают, что m_xMtx захвачен
-// вызывающей стороной и m_image->data валиден.
+// ─── Оверлей детекций ИИ ─────────────────────────────────────────────────────
+// Рисование в XImage (BGRA 32bpp). Вызывается из showFrame() с захваченным
+// m_xMtx и валидным m_image->data.
 
 // Компактный 5x7 шрифт (каждый глиф — 7 строк по 5 бит; бит 0 = левый столбец).
 static const uint8_t kFont5x7[128][7] = {
@@ -489,7 +496,7 @@ static const uint32_t kBoxPalette[] = {
 };
 static const int kBoxPaletteSize = (int)(sizeof(kBoxPalette) / sizeof(kBoxPalette[0]));
 
-void DisplayWindow::showDetections(const Detections& dets,
+void DisplayWindow::drawDetections(const Detections& dets,
                                    const std::vector<std::string>& classNames,
                                    int srcW, int srcH) {
     if (m_overlayOnly) return;
@@ -508,9 +515,7 @@ void DisplayWindow::showDetections(const Detections& dets,
     int fs = (int)(scale * 1.5 + 0.5);
     if (fs < 1) fs = 1;
 
-    std::lock_guard<std::mutex> lock(m_xMtx);
-    if (!m_image || !m_image->data) return;
-
+    // Вызывается с уже захваченным m_xMtx (из showFrame) — без повторной блокировки.
     const int bpp = m_image->bits_per_pixel / 8;
     const int imgW = m_image->width;
     const int imgH = m_image->height;

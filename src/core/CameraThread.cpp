@@ -177,16 +177,15 @@ void cameraThread(std::string url, int camIdx) {
                     f = std::move(dispQueue.front());
                     dispQueue.pop_front();
                 }
-                display->showFrame(f.y.data(), f.uv.data(), f.w, f.h, f.sy, f.suv);
-
-                // Детекция на показанном кадре: аплоад NV12 на GPU → инференс →
-                // оверлей боксов. Координаты детекций — в пикселях исходного кадра.
+                // Детекция ИИ на кадре (до отображения): аплоад NV12 на GPU →
+                // инференс → боксы. Оверлей рисуется внутри display->showFrame
+                // (display.cpp) в буфере XImage перед выводом в окно.
+                Detections dets;
                 if (infer && infer->ready()) {
-                    Detections dets = infer->runHostNv12(f.y.data(), f.uv.data(),
-                                                         f.w, f.h, f.sy, f.suv, -1);
+                    dets = infer->runHostNv12(f.y.data(), f.uv.data(),
+                                              f.w, f.h, f.sy, f.suv, -1);
                     infProcessed++;
                     if (!dets.empty()) {
-                        display->showDetections(dets, g_classNames, f.w, f.h);
                         infDetFrames++;
                         infTotalDets += (int)dets.size();
                     }
@@ -197,6 +196,9 @@ void cameraThread(std::string url, int camIdx) {
                                  ", боксов=" + std::to_string(infTotalDets));
                     }
                 }
+
+                display->showFrame(f.y.data(), f.uv.data(), f.w, f.h,
+                                   f.sy, f.suv, dets, g_classNames);
             }
         });
 

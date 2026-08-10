@@ -57,16 +57,34 @@ written to `decode_times_<idx>.json`.
 ## YOLO detection
 
 ```sh
-# YOLOv8/v11/v12 (anchor-free, вход 640×640)
-./build/rtsp_decoder --model yolo.engine --labels coco.names --conf 0.4 --nms 0.5
+# YOLOv8/v11/v12 (anchor-free, вход 640×640) — рабочий путь (yolo26n.pt → engine)
+./build/rtsp_decoder --model yolo/yolo26n.engine --labels yolo/coco.names \
+    --conf 0.5 --nms 0.45 --display cuda
 
 # YOLOv2 (anchor-based, Keras h5 → .engine, вход 608×608)
 ./build/rtsp_decoder --model yolo/yolo_v2.engine --labels yolo/coco.names --yolov2
 ```
 
 - Препроцессинг: letterbox → NCHW F32 (нормализация /255), общий для всех моделей.
-- Постпроцессинг YOLOv2 (сетка 19×19, якоря, NMS) — в `YoloV2Postprocess`.
-- Конвертация Keras `yolo_model_complete.h5` → `.engine` и все файлы — в
-  папке [`yolo/`](yolo/README.md) (модель, `convert_h5_to_engine.py`, `coco.names`).
+- Постпроцессинг YOLOv8 (anchor-free, выход `[1, 4+nc, 8400]`) — в `YoloPostprocess`;
+  YOLOv2 (anchor-based, сетка 19×19, якоря, NMS) — в `YoloV2Postprocess`.
+- Оверлей боксов ИИ рисуется в `src/display/Display.cpp` (`showFrame`), режим
+  `--display cuda` (XImage-буфер). В режиме `xvimagesink` окно отдано GStreamer,
+  поэтому детекции накладывать некуда.
+- Конвертация моделей → `.engine` описана в папке [`yolo/`](yolo/README.md).
+
+### Сборка engine из yolo26n.pt (ultralytics)
+
+```sh
+cd yolo
+python3 -c "
+from ultralytics import YOLO
+YOLO('yolo26n.pt').export(format='onnx', imgsz=640, opset=13, end2end=False, nms=False)
+"
+/usr/src/tensorrt/bin/trtexec --onnx=yolo26n.onnx --saveEngine=yolo26n.engine --fp16
+```
+
+Выход ONNX — `[1, 84, 8400]` (4 + 80 классов COCO, 8400 анкоров), что совпадает
+с ожиданиями `YoloPostprocess`.
 
 Enter RTSP URL(s), comma-separated, at the prompt; add cameras at runtime or type `exit`.
