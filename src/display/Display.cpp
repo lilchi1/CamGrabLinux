@@ -67,9 +67,32 @@ bool DisplayWindow::open(const std::string& title, int width, int height,
 
     // Подключение к X-серверу
     m_display = XOpenDisplay(nullptr);
-    if (!m_display) return false;
+    if (!m_display) {
+        fprintf(stderr, "[Display] не удалось подключиться к X-серверу\n");
+        return false;
+    }
 
     int screen = DefaultScreen(m_display);
+
+    // CUDA инициализируется ДО создания окна: если памяти не хватает
+    // (например, работает другой экземпляр rtsp_decoder — память Jetson
+    // общая), окно не создаётся вовсе и не «мелькает» при неудаче.
+    if (!m_overlayOnly) {
+        m_cuda = new CudaDisplay();
+        if (!m_cuda->init(width, height)) {
+            fprintf(stderr, "[Display] ошибка инициализации CUDA: не хватает "
+                            "памяти GPU — проверьте, не запущен ли другой "
+                            "экземпляр (ps | grep rtsp_decoder)\n");
+            delete m_cuda;
+            m_cuda = nullptr;
+            m_cudaReady = false;
+            close();
+            return false;
+        }
+        m_cudaReady = true;
+        fprintf(stderr, "[Display] Используется GPU-ускорение CUDA\n");
+    }
+
     Window root = RootWindow(m_display, screen);
 
     // Создание окна
@@ -100,19 +123,6 @@ bool DisplayWindow::open(const std::string& title, int width, int height,
 
     // Выделение XImage (MIT-SHM или обычный)
     allocateImage(width, height);
-
-    // Инициализация CUDA для конвертации NV12→BGRA и масштабирования
-    m_cuda = new CudaDisplay();
-    if (m_cuda->init(width, height)) {
-        m_cudaReady = true;
-        fprintf(stderr, "[Display] Используется GPU-ускорение CUDA\n");
-    } else {
-        delete m_cuda; m_cuda = nullptr;
-        m_cudaReady = false;
-        fprintf(stderr, "[Display] ошибка инициализации CUDA\n");
-        close();
-        return false;
-    }
 
     XSync(m_display, False);
     return true;
@@ -285,6 +295,19 @@ void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
     if (m_overlayOnly) return;  // рендер внешний (nv3dsink)
     if (!m_image || !m_image->data || !m_cudaReady || !m_cuda) return;
 
+    if (!m_cuda->uploadNv12(yPlane, uvPlane, strideY, strideUV, srcW, srcH))
+        return;
+
+    showFrameFromDevice(srcW, srcH, dets, classNames);
+}
+
+// Отображение NV12, уже загруженного на GPU (общий буфер с инференсом).
+void DisplayWindow::showFrameFromDevice(int srcW, int srcH,
+                                        const Detections& dets,
+                                        const std::vector<std::string>& classNames) {
+    if (m_overlayOnly) return;  // рендер внешний (nv3dsink)
+    if (!m_image || !m_image->data || !m_cudaReady || !m_cuda) return;
+
     // Масштабирование с сохранением пропорций (вычисляем без блокировки)
     double scale = std::min((double)m_width / srcW, (double)m_height / srcH);
     int outW = (int)(srcW * scale + 0.5);
@@ -294,8 +317,7 @@ void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
 
     // CUDA: масштабирование + конвертация NV12→BGRA на GPU (без блокировки X)
     int outStride = 0;
-    uint8_t* bgra = m_cuda->process(yPlane, uvPlane, strideY, strideUV,
-                                    srcW, srcH, outW, outH, outStride);
+    uint8_t* bgra = m_cuda->processFromDevice(srcW, srcH, outW, outH, outStride);
     if (!bgra) return;
 
     // ─── Критическая секция: только копирование в XImage и вывод ──────────
@@ -341,6 +363,21 @@ void DisplayWindow::showFrame(uint8_t* yPlane, uint8_t* uvPlane,
         }
     }
     // ─── Конец критической секции ──────────────────────────────────────────
+}
+
+// Проброс к CudaDisplay: единый аплоад NV12 (буфер общий с инференсом)
+uint8_t* DisplayWindow::uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
+                                   int strideY, int strideUV, int srcW, int srcH) {
+    return m_cuda ? m_cuda->uploadNv12(yPlane, uvPlane, strideY, strideUV, srcW, srcH)
+                  : nullptr;
+}
+
+uint8_t* DisplayWindow::deviceY() const {
+    return m_cuda ? m_cuda->deviceY() : nullptr;
+}
+
+uint8_t* DisplayWindow::deviceUV() const {
+    return m_cuda ? m_cuda->deviceUV() : nullptr;
 }
 
 // ─── Оверлей детекций ИИ ─────────────────────────────────────────────────────
@@ -473,11 +510,13 @@ static int drawTextImage(XImage* img, int bpp, int imgW, int imgH,
                          uint32_t fg) {
     int cursor = x0;
     for (unsigned char ch : text) {
-        const uint8_t* glyph = kFont5x7[ch < 128 ? ch : ' '];
+        // Таблица индексируется с 0x20 (' '): индекс = код символа - 0x20
+        const uint8_t* glyph = kFont5x7[(ch >= 0x20 && ch < 0x7F) ? (ch - 0x20) : 0];
         for (int r = 0; r < 7; r++) {
             uint8_t row = glyph[r];
             for (int c = 0; c < 5; c++) {
-                if (row & (1u << c)) {
+                // Глифы хранятся MSB-first: бит 4 = левый столбец.
+                if (row & (1u << (4 - c))) {
                     fillRectImage(img, bpp, imgW, imgH,
                                   cursor + c * fs, y0 + r * fs, fs, fs, fg);
                 }

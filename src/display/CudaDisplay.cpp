@@ -105,15 +105,15 @@ bool CudaDisplay::reallocDev(int ySize, int uvSize, int bgrStride, int bgrH) {
     return true;
 }
 
-// Основной процесс: копирование NV12 на GPU → запуск CUDA-ядра → копирование BGRA обратно
-uint8_t* CudaDisplay::process(const uint8_t* yPlane, const uint8_t* uvPlane,
-                               int srcStrideY, int srcStrideUV,
-                               int srcW, int srcH, int dstW, int dstH,
-                               int& outStride) {
+// Загрузка NV12 на GPU (один раз на кадр). Синхронная: после возврата данные
+// готовы для чтения инференсом (deviceY()/deviceUV()) и конвертацией.
+uint8_t* CudaDisplay::uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
+                                 int srcStrideY, int srcStrideUV,
+                                 int srcW, int srcH) {
     if (!m_ready || !yPlane || !uvPlane) return nullptr;
 
-    int bgrStride = dstW * 4;  // BGRA: 4 байта на пиксель
-    if (!reallocDev(srcW * srcH, srcW * (srcH / 2), bgrStride, dstH))
+    // Только NV12-буферы; BGRA (bgrStride=0) перевыделит processFromDevice.
+    if (!reallocDev(srcW * srcH, srcW * (srcH / 2), 0, 0))
         return nullptr;
 
     // Копирование NV12 из хоста в device (с учётом stride)
@@ -151,6 +151,25 @@ uint8_t* CudaDisplay::process(const uint8_t* yPlane, const uint8_t* uvPlane,
         return nullptr;
     }
 
+    // Синхронизация: аплоад завершён, NV12 готов для чтения инференсом и
+    // конвертацией. Полная синхронизация — как в исходном runHostNv12:
+    // preprocessMs остаётся «чистым» временем препроцессинга (без хвоста
+    // аплоада в замере) и CV-CUDA не пересекается с кросс-стримным событием.
+    cudaStreamSynchronize(m_stream);
+    return d_y;
+}
+
+// Конвертация уже загруженного на GPU NV12 → BGRA + копирование обратно на хост
+uint8_t* CudaDisplay::processFromDevice(int srcW, int srcH, int dstW, int dstH,
+                                        int& outStride) {
+    if (!m_ready) return nullptr;
+
+    int bgrStride = dstW * 4;  // BGRA: 4 байта на пиксель
+    if (!reallocDev(0, 0, bgrStride, dstH))
+        return nullptr;
+
+    cudaError_t err;
+
     // Запуск CUDA-ядра: комбинированное масштабирование + конвертация NV12→BGRA
     bool needScale = (dstW != srcW || dstH != srcH);
 
@@ -179,4 +198,14 @@ uint8_t* CudaDisplay::process(const uint8_t* yPlane, const uint8_t* uvPlane,
     cudaStreamSynchronize(m_stream);
     outStride = bgrStride;
     return h_bgr;
+}
+
+// Основной процесс: uploadNv12 + processFromDevice
+uint8_t* CudaDisplay::process(const uint8_t* yPlane, const uint8_t* uvPlane,
+                               int srcStrideY, int srcStrideUV,
+                               int srcW, int srcH, int dstW, int dstH,
+                               int& outStride) {
+    if (!uploadNv12(yPlane, uvPlane, srcStrideY, srcStrideUV, srcW, srcH))
+        return nullptr;
+    return processFromDevice(srcW, srcH, dstW, dstH, outStride);
 }

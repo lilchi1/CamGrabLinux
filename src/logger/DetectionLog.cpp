@@ -1,27 +1,13 @@
-// PipelineJsonLogger.cpp — реализация JSON-логгера этапов обработки кадра.
-#include "PipelineJsonLogger.h"
+// DetectionLog.cpp — реализация JSON-логгера детекций (боксов).
+#include "DetectionLog.h"
 
 #include <cstdio>
 #include <sys/stat.h>
 #include <sys/types.h>
 
-namespace {
+DetectionLogger::~DetectionLogger() { end(); }
 
-// Форматирование времени в мс: "%.4f"; -1.0 (нет данных) → "-1".
-std::string formatMs(double v) {
-    char buf[32];
-    if (v < 0.0)
-        snprintf(buf, sizeof(buf), "-1");
-    else
-        snprintf(buf, sizeof(buf), "%.4f", v);
-    return std::string(buf);
-}
-
-}  // namespace
-
-PipelineJsonLogger::~PipelineJsonLogger() { end(); }
-
-bool PipelineJsonLogger::begin(const std::string& path) {
+bool DetectionLogger::begin(const std::string& path) {
     end();
 
     // Создание родительской папки (logs/) при необходимости
@@ -35,7 +21,7 @@ bool PipelineJsonLogger::begin(const std::string& path) {
     if (!m_fs.is_open())
         return false;
 
-    m_fs << "{\"frames\": [\n";
+    m_fs << "{\"detections\": [\n";
     m_fs.flush();
     m_endOffset = m_fs.tellp();
 
@@ -44,12 +30,12 @@ bool PipelineJsonLogger::begin(const std::string& path) {
         m_stop = false;
         m_open = true;
         m_wroteItem = false;
-        m_thread = std::thread(&PipelineJsonLogger::writerLoop, this);
+        m_thread = std::thread(&DetectionLogger::writerLoop, this);
     }
     return true;
 }
 
-void PipelineJsonLogger::append(const PipelineLogRecord& rec) {
+void DetectionLogger::append(const DetectionRecord& rec) {
     {
         std::lock_guard<std::mutex> lock(m_mtx);
         if (!m_open)
@@ -59,7 +45,7 @@ void PipelineJsonLogger::append(const PipelineLogRecord& rec) {
     m_cv.notify_one();
 }
 
-void PipelineJsonLogger::end() {
+void DetectionLogger::end() {
     {
         std::lock_guard<std::mutex> lock(m_mtx);
         if (!m_open)
@@ -85,9 +71,9 @@ void PipelineJsonLogger::end() {
     }
 }
 
-void PipelineJsonLogger::writerLoop() {
+void DetectionLogger::writerLoop() {
     for (;;) {
-        PipelineLogRecord rec;
+        DetectionRecord rec;
         {
             std::unique_lock<std::mutex> lock(m_mtx);
             m_cv.wait_for(lock, std::chrono::milliseconds(200), [&] {
@@ -114,26 +100,19 @@ void PipelineJsonLogger::writerLoop() {
     }
 }
 
-std::string PipelineJsonLogger::formatRecord(const PipelineLogRecord& r) const {
+std::string DetectionLogger::formatRecord(const DetectionRecord& r) const {
     std::string s = "{";
     s += "\"frame_no\":" + std::to_string(r.frameNo) + ",";
     s += "\"pts\":" + std::to_string(r.pts) + ",";
     s += "\"timestamp\":\"" + r.timestamp + "\",";
-    s += "\"source\":\"" + r.source + "\",";
-    s += "\"codec\":\"" + r.codec + "\",";
-    s += "\"decode_ms\":" + formatMs(r.decodeMs) + ",";
-    s += "\"decode_func_ms\":" + formatMs(r.decodeFuncMs) + ",";
-    s += "\"push_block_ms\":" + formatMs(r.pushBlockMs) + ",";
-    s += "\"frame_interval_ms\":" + formatMs(r.frameIntervalMs) + ",";
-    s += "\"queue_depth\":" + std::to_string(r.queueDepth) + ",";
-    s += "\"upload_ms\":" + formatMs(r.uploadMs) + ",";
-    s += "\"preprocess_ms\":" + formatMs(r.preprocessMs) + ",";
-    s += "\"infer_ms\":" + formatMs(r.inferMs) + ",";
-    s += "\"render_ms\":" + formatMs(r.renderMs) + ",";
-    s += "\"render_ai_ms\":" + formatMs(r.renderAiMs) + ",";
-    // Полные боксы пишутся отдельным логом (logs/detections_<cam>.json) —
-    // здесь только счётчик, чтобы основной лог не раздувался массивами.
-    s += "\"num_detections\":" + std::to_string(r.detections.size());
-    s += "}";
+    s += "\"class\":" + std::to_string(r.classId) + ",";
+    s += "\"class_name\":\"" + r.className + "\",";
+    char buf[128];
+    snprintf(buf, sizeof(buf), "\"confidence\":%.4f,", r.confidence);
+    s += buf;
+    snprintf(buf, sizeof(buf),
+             "\"bbox\":[%.1f,%.1f,%.1f,%.1f]}",
+             r.x1, r.y1, r.x2, r.y2);
+    s += buf;
     return s;
 }

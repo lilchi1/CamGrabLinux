@@ -11,6 +11,8 @@
 #include <X11/Xutil.h>
 #include <sys/shm.h>
 
+#include <cuda_runtime.h>
+
 #include "Detection.h"
 
 class CudaDisplay;
@@ -44,6 +46,21 @@ public:
                    int strideY, int strideUV,
                    const Detections& dets = {},
                    const std::vector<std::string>& classNames = {});
+
+    // Отображение NV12, уже загруженного на GPU (CudaDisplay::uploadNv12 —
+    // тот же буфер, что использует инференс; повторного аплоада CPU→GPU нет).
+    void showFrameFromDevice(int srcW, int srcH,
+                             const Detections& dets = {},
+                             const std::vector<std::string>& classNames = {});
+
+    // Единый аплоад NV12 на GPU (общий буфер инференса и отображения).
+    // Возвращает d_y или nullptr при ошибке.
+    uint8_t* uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
+                        int strideY, int strideUV, int srcW, int srcH);
+
+    // Device-указатели загруженного NV12 (после uploadNv12)
+    uint8_t* deviceY() const;
+    uint8_t* deviceUV() const;
 
     // X11-хендл окна (для nv3dsink set_window_handle)
     ::Display* xDisplay() const { return m_display; }

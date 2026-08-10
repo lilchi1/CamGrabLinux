@@ -8,6 +8,7 @@
 #include "Display.h"
 #include "InferPipeline.h"
 #include "PipelineJsonLogger.h"
+#include "DetectionLog.h"
 #include <X11/keysym.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -92,6 +93,7 @@ void cameraThread(std::string url, int camIdx) {
     // выполняет отдельный поток внутри PipelineJsonLogger — в потоках GStreamer
     // и отображения нет блокирующего I/O.
     PipelineJsonLogger jsonLogger;
+    DetectionLogger detLogger;
     bool jsonEnabled = false;
     if (camIdx >= 0 && g_logDecodeSpeed) {
         std::string jsonPath = "logs/pipeline_log_" + std::to_string(camIdx) + ".json";
@@ -100,6 +102,14 @@ void cameraThread(std::string url, int camIdx) {
             logWrite("INFO", url, "JSON-логирование этапов включено: " + jsonPath);
         } else {
             logWrite("WARN", url, "Не удалось открыть JSON-файл лога: " + jsonPath);
+        }
+        // Боксы пишутся отдельным файлом (logs/detections_<cam>.json) — основной
+        // лог этапов не засоряется массивами координат.
+        std::string detPath = "logs/detections_" + std::to_string(camIdx) + ".json";
+        if (detLogger.begin(detPath)) {
+            logWrite("INFO", url, "Лог детекций (боксы) включён: " + detPath);
+        } else {
+            logWrite("WARN", url, "Не удалось открыть файл лога детекций: " + detPath);
         }
     }
 
@@ -164,15 +174,18 @@ void cameraThread(std::string url, int camIdx) {
     }
 
     // ─── Асинхронное отображение ─────────────────────────────────────────────
-    // Колбэк кадра (поток GStreamer) только копирует NV12 в ограниченную очередь
-    // (drop-oldest: при переполнении выбрасывается старый кадр, показывается
-    // свежий). Рендер (CUDA + XPutImage) делает отдельный поток — чтобы CUDA/X11
-    // не блокировали пайплайн декодирования.
+    // Колбэк кадра (поток GStreamer) только переносит указатели NV12 в
+    // ограниченную очередь (drop-oldest: при переполнении выбрасывается старый
+    // кадр, показывается свежий). Пиксели не копируются: GstBuffer удерживается
+    // живым через keepAlive до обработки в потоке отображения. Рендер (CUDA +
+    // XPutImage) делает отдельный поток — чтобы CUDA/X11 не блокировали
+    // пайплайн декодирования.
     struct DispFrame {
-        std::vector<uint8_t> y;    // Y-плоскость NV12
-        std::vector<uint8_t> uv;   // UV-плоскость NV12
+        uint8_t* y = nullptr;     // Y-плоскость NV12 (жива, пока keepAlive)
+        uint8_t* uv = nullptr;    // UV-плоскость NV12
         int w = 0, h = 0, sy = 0, suv = 0;
-        int64_t pts = -1;          // PTS кадра (для корреляции со статистикой декодера)
+        int64_t pts = -1;         // PTS кадра (для корреляции со статистикой декодера)
+        std::shared_ptr<void> keepAlive;  // удержание GstBuffer (zero-copy)
     };
     std::mutex dispMtx;
     std::condition_variable dispCv;
@@ -182,6 +195,30 @@ void cameraThread(std::string url, int camIdx) {
 
     if (display && !overlaySink) {
         dispThread = std::thread([&]() {
+            // ─── Прогрев CUDA/TRT/CV-CUDA до цикла ─────────────────────────
+            // Первый запуск ядер/движка дорогой: на 1-м кадре preprocess до
+            // ~45 мс, infer до ~180 мс (прогрев контекста, компиляция ядер,
+            // инициализация CV-CUDA). Прогоняем один пустой кадр — первый
+            // реальный кадр пойдёт по «тёплому» пути без выбросов.
+            if (infer && infer->ready()) {
+                int ww = 1920, hh = 1080;
+                if (gstDec && gstDec->width() > 0 && gstDec->height() > 0) {
+                    ww = gstDec->width();
+                    hh = gstDec->height();
+                }
+                std::vector<uint8_t> dummy((size_t)ww * hh * 3 / 2, 0);
+                if (display->uploadNv12(dummy.data(), dummy.data() + (size_t)ww * hh,
+                                        ww, ww, ww, hh)) {
+                    GpuFrame wf;
+                    wf.yPlane  = display->deviceY();
+                    wf.uvPlane = display->deviceUV();
+                    wf.width = ww; wf.height = hh;
+                    wf.strideY = ww; wf.strideUV = ww;
+                    wf.pts = -1;
+                    infer->run(wf);
+                }
+            }
+
             while (true) {
                 DispFrame f;
                 {
@@ -194,15 +231,29 @@ void cameraThread(std::string url, int camIdx) {
                     f = std::move(dispQueue.front());
                     dispQueue.pop_front();
                 }
-                // Детекция ИИ на кадре (до отображения): аплоад NV12 на GPU →
-                // инференс → боксы, с замером этапов upload/preprocess/infer.
-                // Оверлей рисуется внутри display->showFrame (display.cpp) в
-                // буфере XImage перед выводом в окно.
+                // Единый аплоад NV12 на GPU: один буфер используют и детекция,
+                // и отображение — исключена повторная передача кадра CPU→GPU.
+                // Аплоад синхронный (как исходный runHostNv12) — preprocessMs
+                // остаётся чистым временем препроцессинга.
                 InferTimings timings;
+                auto up0 = std::chrono::steady_clock::now();
+                if (!display->uploadNv12(f.y, f.uv, f.sy, f.suv, f.w, f.h))
+                    continue;
+                timings.uploadMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - up0).count();
+
+                // Детекция ИИ на кадре (до отображения): инференс читает NV12
+                // из того же device-буфера (GpuFrame без повторного аплоада) →
+                // боксы, с замером этапов preprocess/infer (upload уже сделан).
                 Detections dets;
                 if (infer && infer->ready()) {
-                    dets = infer->runHostNv12(f.y.data(), f.uv.data(),
-                                              f.w, f.h, f.sy, f.suv, f.pts, &timings);
+                    GpuFrame gf;
+                    gf.yPlane  = display->deviceY();
+                    gf.uvPlane = display->deviceUV();
+                    gf.width = f.w; gf.height = f.h;
+                    gf.strideY = f.w; gf.strideUV = f.w;
+                    gf.pts = f.pts;
+                    dets = infer->run(gf, &timings);
                     infProcessed++;
                     if (!dets.empty()) {
                         infDetFrames++;
@@ -218,31 +269,59 @@ void cameraThread(std::string url, int camIdx) {
 
                 // Отрисовка кадра (без/с ИИ-боксами) с замером времени рендера
                 auto r0 = std::chrono::steady_clock::now();
-                display->showFrame(f.y.data(), f.uv.data(), f.w, f.h,
-                                   f.sy, f.suv, dets, g_classNames);
+                display->showFrameFromDevice(f.w, f.h, dets, g_classNames);
                 auto r1 = std::chrono::steady_clock::now();
                 double renderMs = std::chrono::duration<double, std::milli>(r1 - r0).count();
 
                 // ─── Полная запись лога: декод + ИИ + рендер ─────────────
                 if (jsonEnabled) {
-                    PipelineLogRecord rec;
+                    int64_t frameNo = -1;
+                    double decMs = -1.0, decFuncMs = -1.0, pushMs = -1.0, fiMs = -1.0;
+                    int qDepth = 0;
                     {
                         std::lock_guard<std::mutex> lock(statsMtx);
                         auto it = pendingStats.find(f.pts);
                         if (it != pendingStats.end()) {
-                            rec.frameNo = it->second.frameNo;
-                            rec.decodeMs = it->second.st.decodeMs;
-                            rec.decodeFuncMs = it->second.st.decodeFuncMs;
-                            rec.pushBlockMs = it->second.st.pushBlockMs;
-                            rec.frameIntervalMs = it->second.st.frameIntervalMs;
-                            rec.queueDepth = it->second.st.queueDepth;
+                            frameNo = it->second.frameNo;
+                            decMs = it->second.st.decodeMs;
+                            decFuncMs = it->second.st.decodeFuncMs;
+                            pushMs = it->second.st.pushBlockMs;
+                            fiMs = it->second.st.frameIntervalMs;
+                            qDepth = it->second.st.queueDepth;
                             pendingStats.erase(it);
                         }
                     }
+
+                    // ─── Боксы — отдельным файлом (logs/detections_<cam>.json) ─
+                    if (!dets.empty()) {
+                        std::string ts = getCurrentTimestamp();
+                        for (const Detection& d : dets) {
+                            DetectionRecord dr;
+                            dr.frameNo = frameNo;
+                            dr.pts = f.pts;
+                            dr.timestamp = ts;
+                            dr.classId = d.classId;
+                            dr.className = (d.classId >= 0 && (size_t)d.classId < g_classNames.size())
+                                               ? g_classNames[(size_t)d.classId]
+                                               : std::to_string(d.classId);
+                            dr.confidence = d.confidence;
+                            dr.x1 = d.x1; dr.y1 = d.y1; dr.x2 = d.x2; dr.y2 = d.y2;
+                            detLogger.append(dr);
+                        }
+                    }
+
+                    // ─── Основной лог: этапы кадра (без массивов боксов) ────
+                    PipelineLogRecord rec;
+                    rec.frameNo = frameNo;
                     rec.pts = f.pts;
                     rec.timestamp = getCurrentTimestamp();
                     rec.source = std::to_string(f.w) + "x" + std::to_string(f.h);
                     rec.codec = codecStr;
+                    rec.decodeMs = decMs;
+                    rec.decodeFuncMs = decFuncMs;
+                    rec.pushBlockMs = pushMs;
+                    rec.frameIntervalMs = fiMs;
+                    rec.queueDepth = qDepth;
                     rec.uploadMs = timings.uploadMs;
                     rec.preprocessMs = timings.preprocessMs;
                     rec.inferMs = timings.inferMs;
@@ -254,14 +333,14 @@ void cameraThread(std::string url, int camIdx) {
             }
         });
 
-        FrameCallback cb = [&](uint8_t* y, uint8_t* uv, int cw, int ch,
-                               int sy, int suv, int64_t pts) {
+        FrameCallback cb = [&](const HostFrame& hf) {
             if (!g_running) return;
             DispFrame f;
-            f.w = cw; f.h = ch; f.sy = sy; f.suv = suv;
-            f.pts = pts;
-            f.y.assign(y, y + (size_t)sy * ch);
-            f.uv.assign(uv, uv + (size_t)suv * (ch / 2));
+            f.w = hf.width; f.h = hf.height;
+            f.sy = hf.strideY; f.suv = hf.strideUV;
+            f.pts = hf.pts;
+            f.y = hf.yPlane; f.uv = hf.uvPlane;
+            f.keepAlive = hf.keepAlive;   // удерживает GstBuffer живым (zero-copy)
             std::lock_guard<std::mutex> lock(dispMtx);
             if (dispQueue.size() >= 2) dispQueue.pop_front();  // drop-oldest
             dispQueue.push_back(std::move(f));
@@ -432,10 +511,13 @@ void cameraThread(std::string url, int camIdx) {
     dispCv.notify_all();
     if (dispThread.joinable()) dispThread.join();
 
-    // Завершение JSON-лога: закрытие массива, flush, остановка писателя
+    // Завершение JSON-логов: закрытие массивов, flush, остановка писателей
+    detLogger.end();
     jsonLogger.end();
     if (jsonEnabled) {
         logWrite("INFO", url, "JSON-лог сохранён: logs/pipeline_log_" +
+                 std::to_string(camIdx) + ".json");
+        logWrite("INFO", url, "Лог детекций сохранён: logs/detections_" +
                  std::to_string(camIdx) + ".json");
     }
 

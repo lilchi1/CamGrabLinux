@@ -19,6 +19,16 @@
 #include <gst/video/video.h>
 #include <gst/video/videooverlay.h>
 
+// Удерживает маппинг NV12 живым до обработки кадра в потоке-потребителе.
+// gst_video_frame_map берёт реф буфера, gst_video_frame_unmap снимает маппинг
+// и отдаёт реф — поэтому keeper'у достаточно хранить GstVideoFrame (проверено
+// на GStreamer 1.20.3). Деструктор вызывается в потоке отображения.
+struct HostFrameKeeper {
+    GstVideoFrame frame;
+    explicit HostFrameKeeper(const GstVideoFrame& f) : frame(f) {}
+    ~HostFrameKeeper() { gst_video_frame_unmap(&frame); }
+};
+
 namespace {
 
 // Битовый читатель для exp-golomb кодов в slice-заголовке (после EBSP→RBSP).
@@ -313,12 +323,23 @@ GstFlowReturn GstDecoder::onNewSample(GstElement* sink, gpointer userData) {
                 int suv = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 1);
 
                 if (y && uv) {
+                    // Zero-copy: кадр доставляется без копирования пикселей.
+                    // Маппинг и буфер удерживаются keepAlive до обработки кадра
+                    // в потоке отображения (деструктор HostFrameKeeper).
+                    HostFrame hf;
+                    hf.yPlane = y; hf.uvPlane = uv;
+                    hf.width = w; hf.height = h;
+                    hf.strideY = sy; hf.strideUV = suv;
+                    hf.pts = pts;
+                    hf.keepAlive = std::make_shared<HostFrameKeeper>(frame);
+
                     auto d0 = std::chrono::steady_clock::now();
-                    self->m_frameCb(y, uv, w, h, sy, suv, pts);
+                    self->m_frameCb(hf);
                     auto d1 = std::chrono::steady_clock::now();
                     st.displayMs = std::chrono::duration<double, std::milli>(d1 - d0).count();
+                } else {
+                    gst_video_frame_unmap(&frame);
                 }
-                gst_video_frame_unmap(&frame);
             }
         }
         if (self->m_latencyCb)

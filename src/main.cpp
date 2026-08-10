@@ -4,6 +4,8 @@
 #include <poll.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <sys/file.h>
+#include <fcntl.h>
 
 // Глобальный флаг работы программы (атомарный для безопасного доступа из потоков)
 volatile std::sig_atomic_t g_running = 1;
@@ -37,6 +39,43 @@ int g_modelInSize = 0;                                // размер входа
 // Обработчик сигналов SIGINT/SIGTERM — корректное завершение
 static void signalHandler(int) {
     g_running = 0;
+}
+
+// ─── Single-instance guard ──────────────────────────────────────────────────
+// Память Jetson общая (CPU+GPU ~8 ГБ): два экземпляра одновременно не
+// помещаются — второй падает с CUDA OOM. Блокируем повторный запуск через
+// flock на /tmp/rtsp_decoder.lock.
+static int g_lockFd = -1;
+
+static bool acquireSingleInstanceLock() {
+    g_lockFd = open("/tmp/rtsp_decoder.lock", O_CREAT | O_RDWR, 0644);
+    if (g_lockFd < 0) return true;  // не смогли создать — не мешаем запуску
+    if (flock(g_lockFd, LOCK_EX | LOCK_NB) != 0) {
+        char pid[32] = {0};
+        ssize_t n = read(g_lockFd, pid, sizeof(pid) - 1);
+        if (n > 0) {
+            while (n > 0 && (pid[n - 1] == '\n' || pid[n - 1] == ' '))
+                pid[--n] = '\0';
+        }
+        fprintf(stderr, "Ошибка: уже запущен другой экземпляр rtsp_decoder"
+                        "%s%s.\n"
+                        "Запущен только один экземпляр: память Jetson общая, "
+                        "второй не помещается (CUDA OOM).\n",
+                        n > 0 ? " (PID " : "", n > 0 ? pid : "");
+        close(g_lockFd);
+        g_lockFd = -1;
+        return false;
+    }
+    // Запись своего PID в файл (для диагностики)
+    if (ftruncate(g_lockFd, 0) == 0) {
+        char buf[32];
+        int len = snprintf(buf, sizeof(buf), "%d\n", (int)getpid());
+        if (len > 0) {
+            ssize_t wr = write(g_lockFd, buf, (size_t)len);
+            (void)wr;
+        }
+    }
+    return true;
 }
 
 // Чтение строки из stdin без блокировки (poll + read). Возвращает true, если
@@ -94,6 +133,9 @@ int main(int argc, char* argv[]) {
     // Регистрация обработчиков сигналов
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+
+    // Только один экземпляр на машину (общая память Jetson)
+    if (!acquireSingleInstanceLock()) return 1;
 
     // ─── Разбор аргументов командной строки ──────────────────────────────────
     static struct option long_options[] = {

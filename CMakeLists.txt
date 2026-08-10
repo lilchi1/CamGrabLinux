@@ -55,6 +55,7 @@ add_executable(rtsp_decoder
     src/core/Log.cpp
     src/core/CameraThread.cpp
     src/logger/PipelineJsonLogger.cpp
+    src/logger/DetectionLog.cpp
     src/rtsp/RtspReader.cpp
     src/decoder/GstDecoder.cpp
 

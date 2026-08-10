@@ -15,11 +15,29 @@ public:
     // Освобождение всех CUDA ресурсов
     void cleanup();
 
-    // Конвертация NV12→BGRA с масштабированием; возвращает указатель на host-буфер BGRA
+    // Загрузка NV12 на GPU (один раз на кадр). Синхронная: после вызова данные
+    // готовы для чтения инференсом (deviceY()/deviceUV()) и используются
+    // processFromDevice() без повторной передачи CPU→GPU. Возвращает d_y или
+    // nullptr при ошибке.
+    uint8_t* uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
+                        int srcStrideY, int srcStrideUV,
+                        int srcW, int srcH);
+
+    // Конвертация уже загруженного на GPU NV12 (см. uploadNv12) → BGRA
+    // с масштабированием; возвращает указатель на host-буфер BGRA.
+    uint8_t* processFromDevice(int srcW, int srcH, int dstW, int dstH,
+                               int& outStride);
+
+    // Конвертация NV12→BGRA с масштабированием (uploadNv12 + processFromDevice);
+    // возвращает указатель на host-буфер BGRA.
     uint8_t* process(const uint8_t* yPlane, const uint8_t* uvPlane,
                      int srcStrideY, int srcStrideUV,
                      int srcW, int srcH, int dstW, int dstH,
                      int& outStride);
+
+    // Device-указатели загруженного NV12 (после uploadNv12)
+    uint8_t* deviceY() const { return d_y; }
+    uint8_t* deviceUV() const { return d_uv; }
 
 private:
     bool m_ready;            // Флаг готовности CUDA

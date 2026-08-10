@@ -3,6 +3,10 @@ import sys
 import json
 from pathlib import Path
 
+# Все логи и результаты — в папку logs/
+LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
 # Отключаем matplotlib и другие проблемные импорты
 import os
 os.environ["ULTRALYTICS_NO_MATPLOTLIB"] = "1"
@@ -82,9 +86,10 @@ def main():
     print(f"📊 Всего объектов: {len(detections)}")
     
     # Сохраняем в JSON
-    with open('detections.json', 'w') as f:
+    detections_path = LOGS_DIR / 'detections.json'
+    with open(detections_path, 'w') as f:
         json.dump(detections, f, indent=2)
-    print("📁 Результаты сохранены в detections.json")
+    print(f"📁 Результаты сохранены в {detections_path}")
     
     # Сохраняем изображение с рамками (используем PIL вместо OpenCV)
     if detections:
@@ -121,8 +126,8 @@ def main():
                 draw.text((x1, y1-5), text, fill=(0, 0, 0), font=font)
             
             # Сохраняем как JPEG (уже RGB)
-            img.save('detected_image.jpg', quality=95)
-            print("✅ Сохранено: detected_image.jpg")
+            img.save(LOGS_DIR / 'detected_image.jpg', quality=95)
+            print(f"✅ Сохранено: {LOGS_DIR / 'detected_image.jpg'}")
             
         except ImportError:
             print("⚠️ PIL не установлен, изображение не сохранено")
