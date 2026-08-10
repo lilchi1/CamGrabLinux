@@ -1,17 +1,19 @@
 // CameraThread.cpp — Поток камеры: RTSP → декодирование (nvv4l2decoder) → отображение.
 //
-// Отображение и CSV-логирование выполняются в отдельных потоках, чтобы в потоке
+// Отображение и JSON-логирование выполняются в отдельных потоках, чтобы в потоке
 // GStreamer (внутри onNewSample) не было никакого I/O: рендер CUDA+X11 и запись
 // на диск каждый кадр блокировали пайплайн и раздували decode_ms до ~100 мс
 // при чистом декоде NVDEC ~5-17 мс.
 #include "headers.h"
 #include "Display.h"
 #include "InferPipeline.h"
+#include "PipelineJsonLogger.h"
 #include <X11/keysym.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <deque>
 #include <condition_variable>
+#include <map>
 
 // Главный поток камеры: RTSP → декодирование → отображение
 void cameraThread(std::string url, int camIdx) {
@@ -86,21 +88,18 @@ void cameraThread(std::string url, int camIdx) {
         return;
     }
 
-    // CSV-файл с детальной статистикой декодирования (в папке logs/).
-    // Запись в файл выполняет отдельный поток-логгер, gst-поток только
-    // кладёт готовые записи в очередь.
-    std::ofstream csvFile;
+    // JSON-файл лога этапов обработки кадра (в папке logs/). Запись на диск
+    // выполняет отдельный поток внутри PipelineJsonLogger — в потоках GStreamer
+    // и отображения нет блокирующего I/O.
+    PipelineJsonLogger jsonLogger;
+    bool jsonEnabled = false;
     if (camIdx >= 0 && g_logDecodeSpeed) {
-        mkdir("logs", 0755);
-        std::string csvPath = "logs/decode_times_" + std::to_string(camIdx) + ".csv";
-        csvFile.open(csvPath);
-        if (csvFile.is_open()) {
-            csvFile << "resolution,frame_no,pts,codec,source_width,source_height,"
-                    << "decode_ms,decode_func_ms,push_block_ms,display_ms,frame_interval_ms,"
-                    << "queue_depth,decoded_at\n";
-            logWrite("INFO", url, "CSV-логирование включено: " + csvPath);
+        std::string jsonPath = "logs/pipeline_log_" + std::to_string(camIdx) + ".json";
+        if (jsonLogger.begin(jsonPath)) {
+            jsonEnabled = true;
+            logWrite("INFO", url, "JSON-логирование этапов включено: " + jsonPath);
         } else {
-            logWrite("WARN", url, "Не удалось открыть CSV-файл со статистикой декодирования");
+            logWrite("WARN", url, "Не удалось открыть JSON-файл лога: " + jsonPath);
         }
     }
 
@@ -110,6 +109,23 @@ void cameraThread(std::string url, int camIdx) {
     auto lastFpsTime = std::chrono::steady_clock::now();
     double fps = 0.0;
     std::mutex statsMtx;
+
+    // ─── Корреляция статистики декодера с кадром отображения ───────────────
+    // DecodeStats из потока GStreamer кладётся в карту по PTS; поток отображения
+    // забирает запись, когда кадр с этим PTS доходит до рендера. Полная запись
+    // лога (декод + ИИ + рендер) собирается в потоке отображения; без него
+    // (benchmark/overlay) — decode-only из колбэка.
+    struct PendingStats {
+        GstDecoder::DecodeStats st;
+        int64_t frameNo = -1;
+    };
+    std::map<int64_t, PendingStats> pendingStats;  // PTS → статистика декодера
+    bool fullFrameLogging = display && !overlaySink;
+    std::string codecStr;
+    if (codecId == AV_CODEC_ID_H264) codecStr = "H.264";
+    else if (codecId == AV_CODEC_ID_H265) codecStr = "H.265";
+    else if (codecId == AV_CODEC_ID_MJPEG) codecStr = "MJPEG";
+    else codecStr = "Unknown";
 
     // ─── Детекция YOLO (TensorRT) ────────────────────────────────────────────
     // Инференс выполняется в потоке отображения (после показа кадра). Если
@@ -156,6 +172,7 @@ void cameraThread(std::string url, int camIdx) {
         std::vector<uint8_t> y;    // Y-плоскость NV12
         std::vector<uint8_t> uv;   // UV-плоскость NV12
         int w = 0, h = 0, sy = 0, suv = 0;
+        int64_t pts = -1;          // PTS кадра (для корреляции со статистикой декодера)
     };
     std::mutex dispMtx;
     std::condition_variable dispCv;
@@ -178,12 +195,14 @@ void cameraThread(std::string url, int camIdx) {
                     dispQueue.pop_front();
                 }
                 // Детекция ИИ на кадре (до отображения): аплоад NV12 на GPU →
-                // инференс → боксы. Оверлей рисуется внутри display->showFrame
-                // (display.cpp) в буфере XImage перед выводом в окно.
+                // инференс → боксы, с замером этапов upload/preprocess/infer.
+                // Оверлей рисуется внутри display->showFrame (display.cpp) в
+                // буфере XImage перед выводом в окно.
+                InferTimings timings;
                 Detections dets;
                 if (infer && infer->ready()) {
                     dets = infer->runHostNv12(f.y.data(), f.uv.data(),
-                                              f.w, f.h, f.sy, f.suv, -1);
+                                              f.w, f.h, f.sy, f.suv, f.pts, &timings);
                     infProcessed++;
                     if (!dets.empty()) {
                         infDetFrames++;
@@ -197,17 +216,50 @@ void cameraThread(std::string url, int camIdx) {
                     }
                 }
 
+                // Отрисовка кадра (без/с ИИ-боксами) с замером времени рендера
+                auto r0 = std::chrono::steady_clock::now();
                 display->showFrame(f.y.data(), f.uv.data(), f.w, f.h,
                                    f.sy, f.suv, dets, g_classNames);
+                auto r1 = std::chrono::steady_clock::now();
+                double renderMs = std::chrono::duration<double, std::milli>(r1 - r0).count();
+
+                // ─── Полная запись лога: декод + ИИ + рендер ─────────────
+                if (jsonEnabled) {
+                    PipelineLogRecord rec;
+                    {
+                        std::lock_guard<std::mutex> lock(statsMtx);
+                        auto it = pendingStats.find(f.pts);
+                        if (it != pendingStats.end()) {
+                            rec.frameNo = it->second.frameNo;
+                            rec.decodeMs = it->second.st.decodeMs;
+                            rec.decodeFuncMs = it->second.st.decodeFuncMs;
+                            rec.pushBlockMs = it->second.st.pushBlockMs;
+                            rec.frameIntervalMs = it->second.st.frameIntervalMs;
+                            rec.queueDepth = it->second.st.queueDepth;
+                            pendingStats.erase(it);
+                        }
+                    }
+                    rec.pts = f.pts;
+                    rec.timestamp = getCurrentTimestamp();
+                    rec.source = std::to_string(f.w) + "x" + std::to_string(f.h);
+                    rec.codec = codecStr;
+                    rec.uploadMs = timings.uploadMs;
+                    rec.preprocessMs = timings.preprocessMs;
+                    rec.inferMs = timings.inferMs;
+                    if (dets.empty()) rec.renderMs = renderMs;
+                    else rec.renderAiMs = renderMs;
+                    rec.detections = dets;
+                    jsonLogger.append(rec);
+                }
             }
         });
 
         FrameCallback cb = [&](uint8_t* y, uint8_t* uv, int cw, int ch,
                                int sy, int suv, int64_t pts) {
-            (void)pts;
             if (!g_running) return;
             DispFrame f;
             f.w = cw; f.h = ch; f.sy = sy; f.suv = suv;
+            f.pts = pts;
             f.y.assign(y, y + (size_t)sy * ch);
             f.uv.assign(uv, uv + (size_t)suv * (ch / 2));
             std::lock_guard<std::mutex> lock(dispMtx);
@@ -218,65 +270,9 @@ void cameraThread(std::string url, int camIdx) {
         if (gstDec && gstDec->isOpen()) gstDec->setFrameCallback(cb);
     }
 
-    // ─── Асинхронный CSV-логгер ──────────────────────────────────────────────
-    struct LogRec {
-        uint64_t frameNo = 0;
-        int64_t pts = -1;
-        double decodeMs = -1.0;
-        double decodeFuncMs = -1.0;
-        double pushBlockMs = -1.0;
-        double displayMs = -1.0;
-        double frameIntervalMs = -1.0;
-        int queueDepth = 0;
-    };
-    std::mutex logMtx;
-    std::condition_variable logCv;
-    std::deque<LogRec> logQueue;
-    bool logStop = false;
-    std::thread csvThread;
-
-    if (csvFile.is_open()) {
-        std::string resolution = std::to_string(w) + "x" + std::to_string(h);
-        std::string codecStr;
-        if (codecId == AV_CODEC_ID_H264) codecStr = "H.264";
-        else if (codecId == AV_CODEC_ID_H265) codecStr = "H.265";
-        else if (codecId == AV_CODEC_ID_MJPEG) codecStr = "MJPEG";
-        else codecStr = "Unknown";
-
-        csvThread = std::thread([&, resolution, codecStr]() {
-            for (;;) {
-                LogRec r;
-                {
-                    std::unique_lock<std::mutex> lock(logMtx);
-                    logCv.wait_for(lock, std::chrono::milliseconds(200), [&] {
-                        return logStop || !logQueue.empty();
-                    });
-                    if (logStop && logQueue.empty()) break;
-                    if (logQueue.empty()) continue;
-                    r = std::move(logQueue.front());
-                    logQueue.pop_front();
-                }
-            csvFile << resolution << ","
-                    << r.frameNo << ","
-                    << r.pts << ","
-                    << codecStr << ","
-                    << w << ","
-                    << h << ","
-                    << r.decodeMs << ","
-                    << r.decodeFuncMs << ","
-                    << r.pushBlockMs << ","
-                    << r.displayMs << ","
-                    << r.frameIntervalMs << ","
-                    << r.queueDepth << ","
-                    << getCurrentTimestamp() << "\n";
-            }
-            csvFile.flush();
-        });
-    }
-
-    // Колбэк статистики декодирования: накопление статистики и очередь в
-    // CSV-логгер. Вызывается из потока GStreamer — поэтому без I/O и без
-    // форматирования строк (только лёгкие операции).
+    // Колбэк статистики декодирования: накопление статистики и корреляция
+    // с кадром отображения (по PTS). Вызывается из потока GStreamer — поэтому
+    // без I/O и без форматирования строк (только лёгкие операции).
     double sumTotal = 0, sumPush = 0, sumFI = 0, sumDisp = 0;
     uint64_t cntStats = 0;
 
@@ -292,22 +288,29 @@ void cameraThread(std::string url, int camIdx) {
         };
         auto ms = [&](double v) { return v >= 0.0 ? fmt(v) + " ms" : std::string("N/A"); };
 
-        // ─── Постановка записи в очередь CSV-логгера ───────────────────────
-        if (csvThread.joinable()) {
-            LogRec r;
-            r.frameNo = frameCount;
-            r.pts = pts;
-            r.decodeMs = st.decodeMs;
-            r.decodeFuncMs = st.decodeFuncMs;
-            r.pushBlockMs = st.pushBlockMs;
-            r.displayMs = st.displayMs;
-            r.frameIntervalMs = st.frameIntervalMs;
-            r.queueDepth = st.queueDepth;
-            {
-                std::lock_guard<std::mutex> lock(logMtx);
-                if (logQueue.size() >= 8192) logQueue.pop_front();
-                logQueue.push_back(std::move(r));
-                logCv.notify_one();
+        // ─── Корреляция статистики декодера с кадром отображения ─────────
+        if (jsonEnabled) {
+            if (fullFrameLogging) {
+                // Полную запись соберёт поток отображения (декод+ИИ+рендер):
+                // здесь только сохраняем статистику по PTS.
+                if (pendingStats.size() >= 4096)
+                    pendingStats.erase(pendingStats.begin());
+                pendingStats[pts] = PendingStats{st, (int64_t)frameCount};
+            } else {
+                // Потока отображения нет (benchmark/overlay) — пишем запись
+                // только с этапом декодирования.
+                PipelineLogRecord rec;
+                rec.frameNo = (int64_t)frameCount;
+                rec.pts = pts;
+                rec.timestamp = getCurrentTimestamp();
+                rec.source = std::to_string(w) + "x" + std::to_string(h);
+                rec.codec = codecStr;
+                rec.decodeMs = st.decodeMs;
+                rec.decodeFuncMs = st.decodeFuncMs;
+                rec.pushBlockMs = st.pushBlockMs;
+                rec.frameIntervalMs = st.frameIntervalMs;
+                rec.queueDepth = st.queueDepth;
+                jsonLogger.append(rec);
             }
         }
 
@@ -421,19 +424,6 @@ void cameraThread(std::string url, int camIdx) {
     setCamConnected(camIdx, false, url);
     if (gstDec) gstDec->close();   // пайплайн остановлен — новых колбэков нет
 
-    // Остановка потока-логгера: сигнал → join (дочищает очередь), затем закрытие файла
-    {
-        std::lock_guard<std::mutex> lock(logMtx);
-        logStop = true;
-    }
-    logCv.notify_all();
-    if (csvThread.joinable()) csvThread.join();
-    if (csvFile.is_open()) {
-        csvFile.close();
-        logWrite("INFO", url, "CSV-файл сохранён: logs/decode_times_" +
-                 std::to_string(camIdx) + ".csv");
-    }
-
     // Остановка потока отображения: сигнал → join → закрытие окна
     {
         std::lock_guard<std::mutex> lock(dispMtx);
@@ -441,6 +431,14 @@ void cameraThread(std::string url, int camIdx) {
     }
     dispCv.notify_all();
     if (dispThread.joinable()) dispThread.join();
+
+    // Завершение JSON-лога: закрытие массива, flush, остановка писателя
+    jsonLogger.end();
+    if (jsonEnabled) {
+        logWrite("INFO", url, "JSON-лог сохранён: logs/pipeline_log_" +
+                 std::to_string(camIdx) + ".json");
+    }
+
     if (display) { delete display; display = nullptr; }
     reader.close();
     stopCamRunning(camIdx);

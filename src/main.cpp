@@ -39,13 +39,6 @@ static void signalHandler(int) {
     g_running = 0;
 }
 
-// Замер скорости декодирования кадра: время между отправкой пакета в декодер
-// и получением декодированного кадра из appsink (мс).
-double measureDecodeSpeed(const std::chrono::steady_clock::time_point& pushedAt,
-                          const std::chrono::steady_clock::time_point& arrivedAt) {
-    return std::chrono::duration<double, std::milli>(arrivedAt - pushedAt).count();
-}
-
 // Чтение строки из stdin без блокировки (poll + read). Возвращает true, если
 // строка получена; уважает g_running (ESC/SIGINT прерывают ожидание).
 static std::string g_stdinBuf;
@@ -219,7 +212,7 @@ int main(int argc, char* argv[]) {
     } else {
         std::cout << "🖥️  ОБЫЧНЫЙ РЕЖИМ (с отображением, режим: " << g_displayMode << ")" << std::endl;
     }
-    std::cout << "📊 Логирование: ВКЛ (CSV)" << std::endl;
+    std::cout << "📊 Логирование: ВКЛ (JSON)" << std::endl;
     if (!g_modelPath.empty()) {
         int numClasses = g_classNames.empty() ? 80 : (int)g_classNames.size();
         if (g_yolov2Mode) {
@@ -240,7 +233,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::endl;
 
-    // Включить логирование скорости декодирования (CSV) - всегда включено
+    // Включить логирование скорости декодирования (JSON) - всегда включено
     g_logDecodeSpeed.store(true);
 
     std::cout << "Введите RTSP URL (через запятую):" << std::endl;

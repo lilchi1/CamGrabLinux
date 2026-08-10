@@ -36,8 +36,3 @@ extern "C" {
 #include "CameraThread.h"
 #include "GstDecoder.h"
 #include "RtspReader.h"
-
-// Замер скорости декодирования кадра: время между отправкой пакета в декодер
-// и получением декодированного кадра (мс). Определена в main.cpp.
-double measureDecodeSpeed(const std::chrono::steady_clock::time_point& pushedAt,
-                          const std::chrono::steady_clock::time_point& arrivedAt);

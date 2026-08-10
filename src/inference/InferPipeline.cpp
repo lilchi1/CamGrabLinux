@@ -1,7 +1,18 @@
 // InferPipeline.cpp — связка препроцессинга, инференса и постпроцессинга.
 #include "InferPipeline.h"
 
+#include <chrono>
 #include <cstdio>
+
+namespace {
+
+// Время этапа от t0 до "сейчас" в миллисекундах.
+double elapsedMs(const std::chrono::steady_clock::time_point& t0) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0).count();
+}
+
+}  // namespace
 
 InferPipeline::InferPipeline() = default;
 
@@ -152,8 +163,11 @@ bool InferPipeline::ensureNv12Buffer(int width, int height)
 
 Detections InferPipeline::runHostNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
                                       int width, int height, int strideY, int strideUV,
-                                      int64_t pts)
+                                      int64_t pts, InferTimings* t)
 {
+    InferTimings local;
+    if (!t) t = &local;
+
     if (!ready() || !yPlane || !uvPlane || width <= 0 || height <= 0 || (height & 1))
         return {};
     if (!ensureNv12Buffer(width, height))
@@ -163,6 +177,7 @@ Detections InferPipeline::runHostNv12(const uint8_t* yPlane, const uint8_t* uvPl
     uint8_t* uvDst = m_dNv12 + (size_t)width * height;
 
     // Загрузка плоскостей на GPU с учётом stride (ширина строки в байтах = width).
+    auto up0 = std::chrono::steady_clock::now();
     cudaError_t e1 = cudaMemcpy2DAsync(yDst, width, yPlane, strideY,
                                        width, height, cudaMemcpyHostToDevice, m_stream);
     cudaError_t e2 = cudaMemcpy2DAsync(uvDst, width, uvPlane, strideUV,
@@ -173,6 +188,8 @@ Detections InferPipeline::runHostNv12(const uint8_t* yPlane, const uint8_t* uvPl
                 cudaGetErrorString(e1), cudaGetErrorString(e2));
         return {};
     }
+    cudaStreamSynchronize(m_stream);
+    t->uploadMs = elapsedMs(up0);
 
     // Дальше — общий GPU-путь с этим кадром (плотно упакован, stride = width).
     GpuFrame f;
@@ -183,7 +200,7 @@ Detections InferPipeline::runHostNv12(const uint8_t* yPlane, const uint8_t* uvPl
     f.strideY = width;
     f.strideUV = width;
     f.pts = pts;
-    return run(f);
+    return run(f, t);
 }
 
 bool InferPipeline::ready() const
@@ -191,22 +208,32 @@ bool InferPipeline::ready() const
     return m_pp.nchwOutput() && m_trt.ready() && (m_post || m_postV2);
 }
 
-Detections InferPipeline::run(const GpuFrame& frame)
+Detections InferPipeline::run(const GpuFrame& frame, InferTimings* t)
 {
+    InferTimings local;
+    if (!t) t = &local;
+
     Detections dets;
     if (!ready() || !frame.valid())
         return dets;
 
+    auto pp0 = std::chrono::steady_clock::now();
     if (!m_pp.preprocess(frame))
     {
         fprintf(stderr, "[InferPipeline] preprocess failed\n");
         return dets;
     }
+    cudaStreamSynchronize(m_stream);
+    t->preprocessMs = elapsedMs(pp0);
+
+    auto inf0 = std::chrono::steady_clock::now();
     if (!m_trt.infer(m_stream))
     {
         fprintf(stderr, "[InferPipeline] TensorRT infer failed\n");
         return dets;
     }
+    cudaStreamSynchronize(m_stream);
+    t->inferMs = elapsedMs(inf0);
 
     const float* output = static_cast<const float*>(m_trt.outputPtr());
     if (!output)

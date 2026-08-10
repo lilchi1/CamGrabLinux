@@ -25,6 +25,13 @@ struct YoloV2Config {
     std::vector<float> anchors;           // пары (w,h) в пикселях входа модели
 };
 
+// Времена этапов обработки одного кадра (мс) — для JSON-лога.
+struct InferTimings {
+    double uploadMs = -1.0;     // NV12 host→device upload
+    double preprocessMs = -1.0; // letterbox + normalize + NCHW
+    double inferMs = -1.0;      // TensorRT enqueue+выполнение
+};
+
 class InferPipeline {
 public:
     InferPipeline();
@@ -44,15 +51,17 @@ public:
 
     // Полный прогон для одного кадра. Асинхронен до NMS; NMS синхронизирует
     // CUDA-поток и возвращает детекции в координатах исходного кадра.
-    Detections run(const GpuFrame& frame);
+    // t (опционально) — заполняется временами этапов.
+    Detections run(const GpuFrame& frame, InferTimings* t = nullptr);
 
     // Прогон для кадра NV12 в host-памяти (GstDecoder отдаёт именно такой).
     // Плоскости асинхронно загружаются в постоянный device-буфер (cudaMemcpy2DAsync
     // с учётом stride) и далее идёт полный GPU-путь run(). Возвращает детекции
     // в координатах исходного кадра.
+    // t (опционально) — заполняется временами upload/preprocess/infer.
     Detections runHostNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
                            int width, int height, int strideY, int strideUV,
-                           int64_t pts);
+                           int64_t pts, InferTimings* t = nullptr);
 
     const CvcudaPreprocessor& preprocessor() const { return m_pp; }
     const TensorRtInfer& infer() const { return m_trt; }

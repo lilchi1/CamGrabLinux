@@ -275,7 +275,6 @@ GstFlowReturn GstDecoder::onNewSample(GstElement* sink, gpointer userData) {
         // ── Сбор статистики кадра для анализа задержек ─────────────────
         DecodeStats st;
         st.decodeMs = decodeMs;
-        st.decodeFuncMs = decodeMs;  // вход pushPacket → выход кадра из appsink
         st.pushBlockMs = self->m_lastPushBlockMs.load();
         auto now = std::chrono::steady_clock::now();
 
@@ -288,6 +287,19 @@ GstFlowReturn GstDecoder::onNewSample(GstElement* sink, gpointer userData) {
         {
             std::lock_guard<std::mutex> lock(self->m_mtx);
             st.queueDepth = (int)self->m_pushTimes.size();
+        }
+
+        // Время от входа пакета в декодер (pushPacket) до выхода кадра из
+        // appsink. Сопоставление FIFO 1:1: по одному VCL-пакету на кадр
+        // (B-кадры отбрасываются до декодера, стабилизатор темпа съедает
+        // одну запись на дропнутый кадр).
+        {
+            std::lock_guard<std::mutex> lock(self->m_mtx);
+            if (!self->m_pushTimes.empty()) {
+                auto pushAt = self->m_pushTimes.front();
+                self->m_pushTimes.pop_front();
+                st.decodeFuncMs = std::chrono::duration<double, std::milli>(now - pushAt).count();
+            }
         }
 
         // Доставка пикселей только если колбэк установлен. В nv3dsink-режиме

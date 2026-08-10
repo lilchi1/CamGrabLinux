@@ -29,7 +29,7 @@ public:
     // Статистика декодирования кадра (мс)
     struct DecodeStats {
         double decodeMs = -1.0;         // чистое декодирование NVDEC: sink-пад → src-пад
-        double decodeFuncMs = -1.0;     // = decodeMs (вход декодера → выход кадра)
+        double decodeFuncMs = -1.0;     // вход pushPacket в декодер → выход кадра из appsink
         double pushBlockMs = -1.0;      // блокировка gst_app_src_push_buffer (backpressure)
         double frameIntervalMs = -1.0;  // интервал между кадрами из appsink
         double displayMs = -1.0;        // время обработки кадра в колбэке (CUDA+X11)
