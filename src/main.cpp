@@ -254,7 +254,7 @@ int main(int argc, char* argv[]) {
     } else {
         std::cout << "🖥️  ОБЫЧНЫЙ РЕЖИМ (с отображением, режим: " << g_displayMode << ")" << std::endl;
     }
-    std::cout << "📊 Логирование: ВКЛ (JSON)" << std::endl;
+    std::cout << "📊 Логирование: ВКЛ (CSV, decode/preprocess/infer/total)" << std::endl;
     if (!g_modelPath.empty()) {
         int numClasses = g_classNames.empty() ? 80 : (int)g_classNames.size();
         if (g_yolov2Mode) {
@@ -275,7 +275,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::endl;
 
-    // Включить логирование скорости декодирования (JSON) - всегда включено
+    // Включить логирование таймингов (CSV) - всегда включено
     g_logDecodeSpeed.store(true);
 
     std::cout << "Введите RTSP URL (через запятую):" << std::endl;

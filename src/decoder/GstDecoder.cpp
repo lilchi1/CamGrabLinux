@@ -7,12 +7,12 @@
 // (только I/P), поэтому NVDEC не выполняет reorder и задержка минимальна.
 // Низкая задержка обеспечивается реальными свойствами nvv4l2decoder:
 // disable-dpb=TRUE + enable-max-performance=TRUE + num-extra-surfaces=0,
-// appsrc is-live=FALSE, стабилизатор темпа 30 мс в onNewSample.
+// appsrc is-live=FALSE. Стабилизатора темпа нет — без искусственной задержки.
 // Время декодирования кадра замеряется pad-пробами на nvv4l2decoder:
 // вход буфера в sink-пад → выход кадра из src-пада (чистое NVDEC, без
 // parse/очередей/рендера). Сопоставление по PTS — SPS/PPS-пакеты входят
-// в декодер без выхода, а стабилизатор темпа и drop=TRUE у appsink могут
-// дропать кадры, поэтому FIFO по порядку здесь не годится.
+// в декодер без выхода, а async-режим (drop=TRUE) может дропать кадры,
+// поэтому FIFO по порядку здесь не годится.
 #include "headers.h"
 #include <gst/app/gstappsrc.h>
 #include <gst/app/gstappsink.h>
@@ -82,7 +82,7 @@ int ebspToRbsp(const uint8_t* src, int size, uint8_t* dst, int dstCap) {
 
 GstDecoder::GstDecoder()
     : m_pipeline(nullptr), m_appsrc(nullptr), m_appsink(nullptr),
-      m_codecId(0), m_overlayMode(false), m_overlayWindow(0),
+      m_codecId(0), m_overlayMode(false), m_syncMode(false), m_overlayWindow(0),
       m_width(0), m_height(0), m_failed(false),
       m_droppedB(0), m_seenKeyframe(false),
       m_lastPushBlockMs(0.0) {}
@@ -235,23 +235,6 @@ GstFlowReturn GstDecoder::onNewSample(GstElement* sink, gpointer userData) {
     GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
     if (!sample) return GST_FLOW_OK;
 
-    // Стабилизатор темпа: кадр, пришедший раньше чем через 30 мс после
-    // предыдущего, отбрасывается — выход ровный, пайплайн не забивается.
-    // Отброшенный кадр «съедает» одну запись FIFO времён пушей, маппинг
-    // push↔кадр остаётся 1:1. Порог 30 мс пропускает до ~33 кадров/с —
-    // для камеры 25 fps (40 мс) и медленнее (10.5 fps, 95 мс) дропов нет.
-    {
-        auto emitNow = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lock(self->m_mtx);
-        if (self->m_lastEmitAt != std::chrono::steady_clock::time_point{} &&
-            std::chrono::duration<double, std::milli>(emitNow - self->m_lastEmitAt).count() < 30.0) {
-            if (!self->m_pushTimes.empty()) self->m_pushTimes.pop_front();
-            gst_sample_unref(sample);
-            return GST_FLOW_OK;
-        }
-        self->m_lastEmitAt = emitNow;
-    }
-
     GstBuffer* buffer = gst_sample_get_buffer(sample);
     GstCaps* caps = gst_sample_get_caps(sample);
 
@@ -301,8 +284,7 @@ GstFlowReturn GstDecoder::onNewSample(GstElement* sink, gpointer userData) {
 
         // Время от входа пакета в декодер (pushPacket) до выхода кадра из
         // appsink. Сопоставление FIFO 1:1: по одному VCL-пакету на кадр
-        // (B-кадры отбрасываются до декодера, стабилизатор темпа съедает
-        // одну запись на дропнутый кадр).
+        // (B-кадры отбрасываются до декодера, дропнутый кадр съедает запись).
         {
             std::lock_guard<std::mutex> lock(self->m_mtx);
             if (!self->m_pushTimes.empty()) {
@@ -389,11 +371,13 @@ GstBusSyncReply GstDecoder::onBusMessage(GstBus* bus, GstMessage* msg, gpointer 
 //  - overlay (xvimagesink): appsrc → parse → nvv4l2decoder → tee →
 //      { queue → nvvidconv(NV12 system) → xvimagesink (рендер в наше окно),
 //        capsf(NVMM) → appsink (только замер, пиксели не маппятся) }.
-bool GstDecoder::open(int codecId, bool overlaySink, guintptr overlayWindow) {
+bool GstDecoder::open(int codecId, bool overlaySink, guintptr overlayWindow,
+                      bool syncMode) {
     close();
 
     m_codecId = codecId;
     m_overlayMode = overlaySink;
+    m_syncMode = syncMode;
     m_overlayWindow = overlayWindow;
     m_failed.store(false);
 
@@ -531,13 +515,25 @@ bool GstDecoder::open(int codecId, bool overlaySink, guintptr overlayWindow) {
     }
 
     // ─── Минимальная буферизация для appsink ──────────────────────────────
-    g_object_set(m_appsink, 
-                 "emit-signals", TRUE, 
-                 "sync", FALSE,
-                 "drop", TRUE,
-                 "max-buffers", 1,
-                 NULL);
-    g_signal_connect(m_appsink, "new-sample", G_CALLBACK(onNewSample), this);
+    if (m_syncMode) {
+        // Zero-latency sync-режим: без сигналов, без дропов, ёмкость 1 кадр.
+        // Если декодер выдал кадр, а он ещё не забран pullFrame — appsrc
+        // заблокируется (backpressure), а не накопит очередь.
+        g_object_set(m_appsink,
+                     "emit-signals", FALSE,
+                     "sync", FALSE,
+                     "drop", FALSE,
+                     "max-buffers", 1,
+                     NULL);
+    } else {
+        g_object_set(m_appsink, 
+                     "emit-signals", TRUE, 
+                     "sync", FALSE,
+                     "drop", TRUE,
+                     "max-buffers", 1,
+                     NULL);
+        g_signal_connect(m_appsink, "new-sample", G_CALLBACK(onNewSample), this);
+    }
 
     // Сборка пайплайна
     if (m_overlayMode) {
@@ -643,6 +639,112 @@ bool GstDecoder::pushPacket(uint8_t* data, int size, int64_t pts) {
     return true;
 }
 
+// Синхронный забор декодированного кадра из appsink (только syncMode).
+// Ждёт до timeoutMs мс. При успехе:
+//  - st.decodeMs      — чистое время NVDEC (pad-пробы sink→src, по PTS);
+//  - st.decodeFuncMs  — от pushPacket (вход VCL-пакета) до выхода кадра;
+//  - st.pushBlockMs   — последняя блокировка gst_app_src_push_buffer;
+//  - st.frameIntervalMs — интервал между кадрами из appsink;
+//  - st.queueDepth    — VCL-пакетов в полёте (наш кадр = 1, больше — очередь).
+// В overlay-режиме пиксели не маппятся (hf.valid()==false) — только тайминги;
+// иначе hf заполняется NV12-указателями, буфер держится keepAlive.
+bool GstDecoder::pullFrame(HostFrame& hf, DecodeStats& st, int timeoutMs) {
+    if (!m_pipeline || !m_appsink || !m_syncMode)
+        return false;
+
+    GstSample* sample = gst_app_sink_try_pull_sample(
+        GST_APP_SINK(m_appsink), timeoutMs * GST_MSECOND);
+    if (!sample)
+        return false;
+
+    bool got = false;
+    GstBuffer* buffer = gst_sample_get_buffer(sample);
+    GstCaps* caps = gst_sample_get_caps(sample);
+    if (buffer && caps) {
+        GstVideoInfo info;
+        if (gst_video_info_from_caps(&info, caps)) {
+            int w = GST_VIDEO_INFO_WIDTH(&info);
+            int h = GST_VIDEO_INFO_HEIGHT(&info);
+            int64_t pts = GST_BUFFER_PTS_IS_VALID(buffer)
+                              ? (int64_t)GST_BUFFER_PTS(buffer) : -1;
+            auto now = std::chrono::steady_clock::now();
+
+            // Чистое время декодирования NVDEC (pad-пробы, sink→src).
+            double decodeMs = -1.0;
+            if (pts >= 0) {
+                std::lock_guard<std::mutex> lock(m_mtx);
+                for (auto it = m_decTimes.begin(); it != m_decTimes.end(); ++it) {
+                    if (it->first == pts) {
+                        decodeMs = it->second;
+                        m_decTimes.erase(it);
+                        break;
+                    }
+                }
+            }
+            if (decodeMs < 0.0)
+                decodeMs = m_lastDecodeMs;
+
+            m_width.store(w);
+            m_height.store(h);
+
+            st.decodeMs = decodeMs;
+            st.pushBlockMs = m_lastPushBlockMs.load();
+
+            if (m_lastSampleAt != std::chrono::steady_clock::time_point{})
+                st.frameIntervalMs = std::chrono::duration<double, std::milli>(
+                    now - m_lastSampleAt).count();
+            m_lastSampleAt = now;
+
+            {
+                std::lock_guard<std::mutex> lock(m_mtx);
+                st.queueDepth = (int)m_pushTimes.size();
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_mtx);
+                if (!m_pushTimes.empty()) {
+                    auto pushAt = m_pushTimes.front();
+                    m_pushTimes.pop_front();
+                    st.decodeFuncMs = std::chrono::duration<double, std::milli>(
+                        now - pushAt).count();
+                }
+            }
+
+            if (!m_overlayMode) {
+                GstVideoFrame frame;
+                if (gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)) {
+                    hf.yPlane  = (uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0);
+                    hf.uvPlane = (uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&frame, 1);
+                    hf.width = w;
+                    hf.height = h;
+                    hf.strideY = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+                    hf.strideUV = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 1);
+                    hf.pts = pts;
+                    hf.keepAlive = std::make_shared<HostFrameKeeper>(frame);
+                }
+                // Даже если маппинг не удался — кадр декодирован: тайминги
+                // уже записаны, считаем его (hf.valid()==false → без пикселей).
+            }
+            got = true;  // кадр получен из appsink (в overlay — только тайминги)
+        }
+    }
+    gst_sample_unref(sample);
+    return got;
+}
+
+// Статический хелпер: анализ Annex-B пакета (VCL-срез / ключевой кадр).
+bool GstDecoder::packetInfo(int codecId, const uint8_t* data, int size,
+                            bool& hasVcl, bool& isKey) {
+    scanPacket(codecId, data, size, hasVcl, isKey);
+    return hasVcl;
+}
+
+// Число VCL-пакетов, отправленных в декодер, но без выхода кадра.
+int GstDecoder::inFlight() const {
+    std::lock_guard<std::mutex> lock(m_mtx);
+    return (int)m_pushTimes.size();
+}
+
 // Закрытие декодера: остановка пайплайна и освобождение ресурсов
 void GstDecoder::close() {
     if (m_pipeline) {
@@ -670,7 +772,6 @@ void GstDecoder::close() {
         m_decTimes.clear();
         m_lastDecodeMs = -1.0;
         m_seenKeyframe = false;
-        m_lastEmitAt = std::chrono::steady_clock::time_point{};
     }
     m_droppedB.store(0);
     m_lastSampleAt = std::chrono::steady_clock::time_point{};

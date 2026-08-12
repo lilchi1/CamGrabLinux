@@ -5,7 +5,8 @@
 // Проект полностью изолирован от B-кадров: пакеты, содержащие B-срез, отбрасываются
 // ДО декодера (только I/P-кадры) — NVDEC не выполняет reorder, задержка минимальна.
 // Низкая задержка: disable-dpb, enable-max-performance, num-extra-surfaces=0,
-// appsrc is-live=FALSE, стабилизатор темпа 30 мс.
+// appsrc is-live=FALSE. Стабилизатора темпа нет — никакой искусственной
+// задержки/дропа кадров.
 // Время декодирования кадра замеряется pad-пробами на nvv4l2decoder:
 // время входа буфера в sink-пад минус время выхода кадра из src-пада
 // (чистое аппаратное декодирование NVDEC, без parse/очередей/рендера).
@@ -45,13 +46,38 @@ public:
     // Открытие декодера для указанного кодека (AV_CODEC_ID_H264 / H265).
     // overlaySink: рендер через xvimagesink в окно overlayWindow (своё X11-окно
     // приложения); замеры остаются на ветке appsink (NVMM, без маппинга пикселей).
-    bool open(int codecId, bool overlaySink = false, guintptr overlayWindow = 0);
+    // syncMode: appsink без колбэков (emit-signals=FALSE, drop=FALSE,
+    // max-buffers=1); кадры забираются явно через pullFrame — это zero-latency
+    // режим без очередей и без отдельного потока отображения.
+    bool open(int codecId, bool overlaySink = false, guintptr overlayWindow = 0,
+              bool syncMode = false);
 
     // Закрытие декодера и остановка GStreamer-пайплайна
     void close();
 
     // Отправка одного закодированного пакета (Annex-B byte-stream) в декодер
     bool pushPacket(uint8_t* data, int size, int64_t pts);
+
+    // Синхронный забор кадра из appsink (только syncMode). Ждёт до timeoutMs.
+    // При успехе заполняет hf (пиксели NV12) и статистику st; в overlay-режиме
+    // пиксели не маппятся (hf.valid()==false) — только тайминги.
+    bool pullFrame(HostFrame& hf, DecodeStats& st, int timeoutMs);
+
+    // Число VCL-пакетов, отправленных в декодер, но ещё без выхода кадра —
+    // прямой индикатор скрытой очереди в пайплайне (в идеале = 1: наш же кадр).
+    int inFlight() const;
+
+    // Анализ Annex-B пакета: hasVcl — есть VCL-срез (кадр), isKey — ключевой
+    // кадр (IDR / IRAP). Один проход. Статический — вызывается до pushPacket.
+    static bool packetInfo(int codecId, const uint8_t* data, int size,
+                           bool& hasVcl, bool& isKey);
+
+    // Был ли получен первый ключевой кадр (после него каждый VCL-пакет
+    // обязан дать выходной кадр — нет «мёртвого ожидания»).
+    bool hasSeenKeyframe() const {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        return m_seenKeyframe;
+    }
 
     // Проверка, открыт ли декодер
     bool isOpen() const { return m_pipeline != nullptr; }
@@ -78,6 +104,7 @@ private:
     GstElement* m_appsink;    // Элемент appsink (выход NV12 кадров)
     int m_codecId;            // ID кодека (H.264/H.265)
     bool m_overlayMode;       // Режим отображения: overlay (tee + xvimagesink + NVMM appsink)
+    bool m_syncMode;          // Sync-режим: pull кадров через pullFrame (без колбэков)
     guintptr m_overlayWindow; // X11-хендл окна для xvimagesink (0 = своё окно)
 
     FrameCallback m_frameCb;      // Доставка NV12 кадров
@@ -88,11 +115,10 @@ private:
     std::atomic<bool> m_failed;   // Флаг сбоя конвейера
     std::atomic<uint64_t> m_droppedB;  // отброшено B-кадров
 
-    std::mutex m_mtx;             // Защита m_pushTimes / m_decInPts / m_decTimes / m_lastPushTime / m_seenKeyframe / m_lastEmitAt
+    mutable std::mutex m_mtx;     // Защита m_pushTimes / m_decInPts / m_decTimes / m_lastPushTime / m_seenKeyframe
     std::deque<std::chrono::steady_clock::time_point> m_pushTimes; // времена отправки VCL-пакетов (FIFO)
     std::chrono::steady_clock::time_point m_lastPushTime;          // время последней отправки
     bool m_seenKeyframe;          // получен ли первый ключевой кадр
-    std::chrono::steady_clock::time_point m_lastEmitAt;  // время последнего выданного кадра (стабилизатор темпа)
 
     // ─── Замер чистого времени декодирования (pad-пробы на декодере) ────────
     // m_decInPts:  (PTS → время входа буфера в sink-пад декодера)
