@@ -72,6 +72,10 @@ public:
     static bool packetInfo(int codecId, const uint8_t* data, int size,
                            bool& hasVcl, bool& isKey);
 
+    // Содержит ли пакет B-срез (будет отброшен в pushPacket, выхода из
+    // декодера не будет — ждать в pullFrame бессмысленно).
+    static bool packetHasB(int codecId, const uint8_t* data, int size);
+
     // Был ли получен первый ключевой кадр (после него каждый VCL-пакет
     // обязан дать выходной кадр — нет «мёртвого ожидания»).
     bool hasSeenKeyframe() const {

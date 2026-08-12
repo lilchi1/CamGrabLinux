@@ -739,6 +739,11 @@ bool GstDecoder::packetInfo(int codecId, const uint8_t* data, int size,
     return hasVcl;
 }
 
+// Статический хелпер: есть ли в пакете B-срез (будет отброшен pushPacket).
+bool GstDecoder::packetHasB(int codecId, const uint8_t* data, int size) {
+    return hasBSlice(codecId, data, size);
+}
+
 // Число VCL-пакетов, отправленных в декодер, но без выхода кадра.
 int GstDecoder::inFlight() const {
     std::lock_guard<std::mutex> lock(m_mtx);

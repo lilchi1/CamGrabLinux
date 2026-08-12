@@ -11,8 +11,10 @@
 // не нужны, лишней задержки и копирования пикселей нет.
 //
 // CSV-лог (logs/pipeline_log_<cam>.csv) содержит только полезные тайминги:
-//   frame_no, decode_ms (чистое NVDEC), preprocess_ms, infer_ms,
+//   frame_no, is_key (1=ключевой кадр, пики total_ms совпадают с ним),
+//   decode_ms (чистое NVDEC), preprocess_ms, infer_ms,
 //   total_ms (общее время обработки пакета: приход пакета → кадр готов).
+// Прогрева нет: цикл стартует сразу после открытия декодера.
 #include "headers.h"
 #include "Display.h"
 #include "InferPipeline.h"
@@ -122,30 +124,6 @@ void cameraThread(std::string url, int camIdx) {
         }
     }
 
-    // ─── Прогрев CUDA/TRT/CV-CUDA до цикла ────────────────────────────────
-    // Первый запуск ядер/движка дорогой (preprocess ~45 мс, infer ~180 мс).
-    // Прогоняем один пустой кадр — реальные кадры пойдут «тёплым» путём.
-    if (infer && infer->ready()) {
-        int ww = gstDec->width() > 0 ? gstDec->width() : w;
-        int hh = gstDec->height() > 0 ? gstDec->height() : h;
-        std::vector<uint8_t> dummy((size_t)ww * hh * 3 / 2, 0);
-        if (display && !overlaySink) {
-            if (display->uploadNv12(dummy.data(), dummy.data() + (size_t)ww * hh,
-                                    ww, ww, ww, hh)) {
-                GpuFrame wf;
-                wf.yPlane  = display->deviceY();
-                wf.uvPlane = display->deviceUV();
-                wf.width = ww; wf.height = hh;
-                wf.strideY = ww; wf.strideUV = ww;
-                wf.pts = -1;
-                infer->run(wf);
-            }
-        } else {
-            infer->runHostNv12(dummy.data(), dummy.data() + (size_t)ww * hh,
-                               ww, hh, ww, ww, -1);
-        }
-    }
-
     // ─── CSV-лог (синхронно, в потоке камеры) ─────────────────────────────
     // Только полезные тайминги: чистое декодирование, препроцессинг, инференс
     // и общее время обработки пакета. Очередей/потоков-писателей нет.
@@ -156,7 +134,7 @@ void cameraThread(std::string url, int camIdx) {
         mkdir("logs", 0755);
         csv = fopen(csvPath, "w");
         if (csv) {
-            fprintf(csv, "frame_no,decode_ms,preprocess_ms,infer_ms,total_ms\n");
+            fprintf(csv, "frame_no,is_key,decode_ms,preprocess_ms,infer_ms,total_ms\n");
             logWrite("INFO", url, "CSV-лог таймингов: " + std::string(csvPath));
         } else {
             logWrite("WARN", url, "Не удалось открыть CSV-лог: " + std::string(csvPath));
@@ -183,43 +161,6 @@ void cameraThread(std::string url, int camIdx) {
 
     setCamConnected(camIdx, true, url);
     logWrite("INFO", url, "Камера подключена");
-
-    // ─── Прогрев NVDEC/GStreamer-пути до первого кадра ─────────────────────
-    // «Задержка при открытии» в total_ms складывается из двух одноразовых
-    // эффектов, и оба поглощаются здесь, до начала замера:
-    //  1) первый gst_app_src_push_buffer синхронно инициализирует пайплайн
-    //     (сессия NVDEC, согласование caps, контекст nvvidconv) — сотни мс;
-    //  2) до первого ключевого кадра NVDEC не выдаёт кадры, и каждый VCL-
-    //     пакет «зависал» бы в pullFrame на таймауте 250 мс (мёртвое время).
-    // Прогоняем путь до первых двух декодированных кадров без записи в CSV
-    // и без статистики — реальные кадры в главном цикле идут «горячим» путём.
-    {
-        int warmPulls = 0;
-        for (int guard = 0; g_running && warmPulls < 2 && guard < 1000; guard++) {
-            uint8_t* wData = nullptr; int wSize = 0; int64_t wPts = 0;
-            if (!reader.readPacket(wData, wSize, wPts)) {
-                logWrite("WARN", url, "Прогрев: ошибка чтения — переподключение");
-                reader.close();
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                if (!reader.open(url, 10)) break;
-                gstDec->close();
-                if (!gstDec->open(codecId, overlaySink, winHandle, true)) break;
-                continue;
-            }
-            bool wVcl = false, wKey = false;
-            GstDecoder::packetInfo(codecId, wData, wSize, wVcl, wKey);
-            if (wVcl && !wKey && !gstDec->hasSeenKeyframe()) continue;
-            if (!gstDec->pushPacket(wData, wSize, wPts)) break;
-            if (wVcl) {
-                HostFrame whf;
-                GstDecoder::DecodeStats wst;
-                if (gstDec->pullFrame(whf, wst, 250)) warmPulls++;
-            }
-        }
-        if (warmPulls > 0)
-            logWrite("INFO", url, "Декодер прогрет (" +
-                     std::to_string(warmPulls) + " кадр) — старт замера");
-    }
 
     // ─── Главный цикл: RTSP → NVDEC → ИИ → рендер → CSV ──────────────────
     while (g_running && isCamRunning(camIdx)) {
@@ -287,17 +228,23 @@ void cameraThread(std::string url, int camIdx) {
         }
         if (hasVcl) vclPushes++;
 
+        // B-кадр: pushPacket отбросит его ДО декодера (hasBSlice) — выхода из
+        // NVDEC не будет, ждать его в pullFrame бессмысленно (мёртвое ожидание
+        // таймаута на каждый B-кадр потока).
+        const bool isB = hasVcl && GstDecoder::packetHasB(codecId, pktData, pktSize);
+
         // Push в декодер (B-кадры режутся внутри pushPacket — до декодера).
         if (!gstDec->pushPacket(pktData, pktSize, pts)) {
             logWrite("ERROR", url, "pushPacket: сбой конвейера");
             break;
         }
+        if (isB) continue;
 
-        // Синхронный забор кадра. VCL-пакет обязан дать кадр (до 250 мс);
-        // SPS/PPS/пре-ключевой выхода не дают — короткий таймаут, не держим поток.
+        // Синхронный забор кадра. I/P-пакет обязан дать кадр (до 100 мс);
+        // SPS/PPS выхода не дают — короткий таймаут, не держим поток.
         HostFrame hf;
         GstDecoder::DecodeStats st;
-        if (!gstDec->pullFrame(hf, st, hasVcl ? 250 : 5)) {
+        if (!gstDec->pullFrame(hf, st, hasVcl ? 100 : 5)) {
             noFrame++;
             if (noFrame == 1 || noFrame % 500 == 0)
                 logWrite("WARN", url, "SYNC: нет выхода кадра (" +
@@ -353,8 +300,9 @@ void cameraThread(std::string url, int camIdx) {
         // ─── CSV: только полезные тайминги ─────────────────────────────────
         frameCount++;
         if (csv) {
-            fprintf(csv, "%llu,%.4f,%.4f,%.4f,%.4f\n",
+            fprintf(csv, "%llu,%d,%.4f,%.4f,%.4f,%.4f\n",
                     (unsigned long long)frameCount,
+                    isKey ? 1 : 0,
                     decodeMs, preprocessMs, inferMs, totalMs);
             fflush(csv);
         }

@@ -74,13 +74,14 @@ CUDA render → CSV timing log
   `drop=FALSE, max-buffers=1`, so the pipeline blocks (backpressure) instead of
   buffering.
 - B-frames are dropped before the decoder (`GstDecoder::pushPacket`), so NVDEC
-  never reorders; packets before the first keyframe are skipped.
-- The decoder is warmed up to the first frames before timing starts, so the
-  one-time NVDEC init never pollutes `total_ms`.
+  never reorders and the loop never waits on a dropped frame; packets before the
+  first keyframe are skipped.
+- No warm-up: the loop starts measuring immediately after the decoder opens.
 - Per-frame timings are written synchronously to
   `logs/pipeline_log_<idx>.csv`:
-  `frame_no, decode_ms (pure NVDEC), preprocess_ms, infer_ms, total_ms`
-  (total = packet received → frame fully processed).
+  `frame_no, is_key, decode_ms (pure NVDEC), preprocess_ms, infer_ms, total_ms`
+  (total = packet received → frame fully processed). `is_key` marks keyframes:
+  regular total_ms spikes line up with them (GOP interval), not with GC/buffers.
 
 ## YOLO detection
 
