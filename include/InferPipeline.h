@@ -49,6 +49,12 @@ public:
     void cleanup();
     bool ready() const;
 
+    // Прогрев GPU-пути: один полный прогон (preprocess+infer) на нулевых данных.
+    // Инициализирует контекст TensorRT, cuBLAS/cuDNN и первичную загрузку ядер —
+    // чтобы первый реальный кадр не тянул разовый спайк (TRT warmup ~88 мс,
+    // первый preprocess ~18 мс). Вызывать сразу после успешного init().
+    void warmup();
+
     // Полный прогон для одного кадра. Асинхронен до NMS; NMS синхронизирует
     // CUDA-поток и возвращает детекции в координатах исходного кадра.
     // t (опционально) — заполняется временами этапов.
@@ -83,4 +89,10 @@ private:
 
     uint8_t* m_dNv12 = nullptr;  // device NV12: [Y: w*h][UV: w*(h/2)]
     size_t m_dNv12Cap = 0;       // ёмкость буфера (байт)
+
+    // Маркеры для тайминга этапов без полной синхронизации потока
+    // (cudaEventElapsedTime): одна cudaStreamSynchronize на кадр вместо трёх.
+    cudaEvent_t m_evStart = nullptr;
+    cudaEvent_t m_evMid = nullptr;
+    cudaEvent_t m_evEnd = nullptr;
 };

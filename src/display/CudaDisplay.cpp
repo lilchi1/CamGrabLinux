@@ -116,38 +116,28 @@ uint8_t* CudaDisplay::uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
     if (!reallocDev(srcW * srcH, srcW * (srcH / 2), 0, 0))
         return nullptr;
 
-    // Копирование NV12 из хоста в device (с учётом stride)
-    cudaError_t err;
-    if (srcStrideY == srcW) {
-        err = cudaMemcpyAsync(d_y, yPlane, srcW * srcH,
-                              cudaMemcpyHostToDevice, m_stream);
-    } else {
-        for (int row = 0; row < srcH; row++) {
-            err = cudaMemcpyAsync(d_y + row * srcW, yPlane + row * srcStrideY,
-                                  srcW, cudaMemcpyHostToDevice, m_stream);
-            if (err != cudaSuccess) break;
-        }
-    }
+    // Копирование NV12 из хоста в device одним вызовом 2D (cudaMemcpy2DAsync):
+    // аппаратный DMA сам учитывает stride источника и устраняет сотни мелких
+    // memcpyAsync на кадр (по одному на строку). dest pitch = srcW (плотно).
+    cudaError_t err = cudaMemcpy2DAsync(
+        d_y,  (size_t)srcW,
+        yPlane, (size_t)srcStrideY,
+        (size_t)srcW, (size_t)srcH,
+        cudaMemcpyHostToDevice, m_stream);
     if (err != cudaSuccess) {
-        fprintf(stderr, "[CUDA] cudaMemcpy Y ошибка: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "[CUDA] cudaMemcpy2D Y ошибка: %s\n", cudaGetErrorString(err));
         return nullptr;
     }
 
     // Копирование UV-плоскости (с учётом stride)
     int uvH = srcH / 2;
-    if (srcStrideUV == srcW) {
-        err = cudaMemcpyAsync(d_uv, uvPlane, (size_t)srcW * uvH,
-                              cudaMemcpyHostToDevice, m_stream);
-    } else {
-        for (int row = 0; row < uvH; row++) {
-            err = cudaMemcpyAsync(d_uv + (size_t)row * srcW,
-                                  uvPlane + (size_t)row * srcStrideUV,
-                                  srcW, cudaMemcpyHostToDevice, m_stream);
-            if (err != cudaSuccess) break;
-        }
-    }
+    err = cudaMemcpy2DAsync(
+        d_uv, (size_t)srcW,
+        uvPlane, (size_t)srcStrideUV,
+        (size_t)srcW, (size_t)uvH,
+        cudaMemcpyHostToDevice, m_stream);
     if (err != cudaSuccess) {
-        fprintf(stderr, "[CUDA] cudaMemcpy UV ошибка: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "[CUDA] cudaMemcpy2D UV ошибка: %s\n", cudaGetErrorString(err));
         return nullptr;
     }
 

@@ -4,16 +4,6 @@
 #include <chrono>
 #include <cstdio>
 
-namespace {
-
-// Время этапа от t0 до "сейчас" в миллисекундах.
-double elapsedMs(const std::chrono::steady_clock::time_point& t0) {
-    return std::chrono::duration<double, std::milli>(
-               std::chrono::steady_clock::now() - t0).count();
-}
-
-}  // namespace
-
 InferPipeline::InferPipeline() = default;
 
 InferPipeline::~InferPipeline() { cleanup(); }
@@ -23,6 +13,15 @@ bool InferPipeline::initCommon(const std::string& enginePath, int outW, int outH
     if (cudaStreamCreate(&m_stream) != cudaSuccess)
     {
         fprintf(stderr, "[InferPipeline] cudaStreamCreate failed\n");
+        return false;
+    }
+    // События с таймингом (для cudaEventElapsedTime) — без них замер невозможен.
+    if (cudaEventCreate(&m_evStart) != cudaSuccess ||
+        cudaEventCreate(&m_evMid) != cudaSuccess ||
+        cudaEventCreate(&m_evEnd) != cudaSuccess)
+    {
+        fprintf(stderr, "[InferPipeline] cudaEventCreate failed\n");
+        cleanup();
         return false;
     }
 
@@ -134,6 +133,9 @@ void InferPipeline::cleanup()
         m_dNv12 = nullptr;
         m_dNv12Cap = 0;
     }
+    if (m_evStart) { cudaEventDestroy(m_evStart); m_evStart = nullptr; }
+    if (m_evMid)   { cudaEventDestroy(m_evMid);   m_evMid = nullptr; }
+    if (m_evEnd)   { cudaEventDestroy(m_evEnd);   m_evEnd = nullptr; }
     if (m_stream)
     {
         cudaStreamDestroy(m_stream);
@@ -188,8 +190,10 @@ Detections InferPipeline::runHostNv12(const uint8_t* yPlane, const uint8_t* uvPl
                 cudaGetErrorString(e1), cudaGetErrorString(e2));
         return {};
     }
-    cudaStreamSynchronize(m_stream);
-    t->uploadMs = elapsedMs(up0);
+    // Без cudaStreamSynchronize здесь: препроцессинг ниже идёт в ТОТ ЖЕ поток —
+    // порядок гарантирован, а единственная синхронизация кадра — в run().
+    t->uploadMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - up0).count();
 
     // Дальше — общий GPU-путь с этим кадром (плотно упакован, stride = width).
     GpuFrame f;
@@ -208,6 +212,29 @@ bool InferPipeline::ready() const
     return m_pp.nchwOutput() && m_trt.ready() && (m_post || m_postV2);
 }
 
+void InferPipeline::warmup()
+{
+    if (!ready())
+        return;
+    // Нулевой NV12 640x640 в постоянном device-буфере; один полный прогон
+    // preprocess→infer→NMS инициализирует всё, что лениво аллоцируется при
+    // первом вызове (контекст TRT, cuBLAS/cuDNN, загрузка ядер). Синхронизация
+    // внутри run() гарантирует, что к возврату всё действительно прогрето.
+    const int w = 640, h = 640;
+    if (!ensureNv12Buffer(w, h))
+        return;
+    cudaMemsetAsync(m_dNv12, 0, (size_t)w * h * 3 / 2, m_stream);
+    GpuFrame f;
+    f.yPlane = m_dNv12;
+    f.uvPlane = m_dNv12 + (size_t)w * h;
+    f.width = w;
+    f.height = h;
+    f.strideY = w;
+    f.strideUV = w;
+    f.pts = -1;
+    run(f, nullptr);
+}
+
 Detections InferPipeline::run(const GpuFrame& frame, InferTimings* t)
 {
     InferTimings local;
@@ -217,23 +244,33 @@ Detections InferPipeline::run(const GpuFrame& frame, InferTimings* t)
     if (!ready() || !frame.valid())
         return dets;
 
-    auto pp0 = std::chrono::steady_clock::now();
+    // Всё ниже — строго в одном CUDA-потоке: порядок операций гарантирован,
+    // тайминги этапов снимаются маркерами cudaEvent (чистое GPU-время), а не
+    // CPU-секундомером между cudaStreamSynchronize. Синхронизация — одна на кадр.
+    cudaEventRecord(m_evStart, m_stream);
+
     if (!m_pp.preprocess(frame))
     {
         fprintf(stderr, "[InferPipeline] preprocess failed\n");
         return dets;
     }
-    cudaStreamSynchronize(m_stream);
-    t->preprocessMs = elapsedMs(pp0);
+    cudaEventRecord(m_evMid, m_stream);
 
-    auto inf0 = std::chrono::steady_clock::now();
     if (!m_trt.infer(m_stream))
     {
         fprintf(stderr, "[InferPipeline] TensorRT infer failed\n");
         return dets;
     }
+    cudaEventRecord(m_evEnd, m_stream);
+
+    // Единственная синхронизация GPU-пути кадра (препроцессинг + инференс).
     cudaStreamSynchronize(m_stream);
-    t->inferMs = elapsedMs(inf0);
+
+    float ms1 = 0.0f, ms2 = 0.0f;
+    if (cudaEventElapsedTime(&ms1, m_evStart, m_evMid) == cudaSuccess)
+        t->preprocessMs = ms1;
+    if (cudaEventElapsedTime(&ms2, m_evMid, m_evEnd) == cudaSuccess)
+        t->inferMs = ms2;
 
     const float* output = static_cast<const float*>(m_trt.outputPtr());
     if (!output)

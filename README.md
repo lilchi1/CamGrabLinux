@@ -79,8 +79,13 @@ CUDA render → CSV timing log
 - No warm-up: the loop starts measuring immediately after the decoder opens.
 - Per-frame timings are written synchronously to
   `logs/pipeline_log_<idx>.csv`:
-  `frame_no, is_key, decode_ms (pure NVDEC), preprocess_ms, infer_ms, total_ms`
-  (total = packet received → frame fully processed). `is_key` marks keyframes:
+  `frame_no, is_key, decode_ms, decode_func_ms, queue_depth, frame_interval_ms,`
+  `push_block_ms, preprocess_ms, infer_ms, total_ms`
+  - `decode_ms` — время пребывания в NVDEC (sink→src pad-пробы), включает ожидание
+    в очереди декодера; `decode_func_ms` — от pushPacket до выхода кадра из appsink;
+  - `queue_depth` — VCL-пакетов в полёте (1 = очереди нет); `frame_interval_ms` —
+    темп выхода кадров из appsink; `push_block_ms` — блокировка push (backpressure);
+  - (total = packet received → frame fully processed). `is_key` marks keyframes:
   regular total_ms spikes line up with them (GOP interval), not with GC/buffers.
 
 ## YOLO detection

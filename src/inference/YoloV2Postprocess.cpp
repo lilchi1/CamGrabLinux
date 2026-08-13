@@ -120,6 +120,8 @@ Detections YoloV2Postprocess::run(const float* output, float scaleX, float scale
     cudaMemcpy(m_cands.data(), m_dCands, (size_t)n * sizeof(YoloCandidate),
                cudaMemcpyDeviceToHost);
 
+    dets.reserve(n);
+
     std::sort(m_cands.begin(), m_cands.end(),
               [](const YoloCandidate& a, const YoloCandidate& b) { return a.score > b.score; });
 

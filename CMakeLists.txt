@@ -14,6 +14,19 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# ─── Агрессивная оптимизация Release ────────────────────────────────────────
+# O3 + развёртка циклов + без frame-pointer. -mcpu=native включает набор
+# инструкций конкретной SoC (NEON и пр.) — существенно для горячих циклов CPU.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -funroll-loops -fomit-frame-pointer -fno-math-errno")
+    set(CMAKE_CUDA_FLAGS_RELEASE "-O3 -DNDEBUG")
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag(-mcpu=native CXX_SUPPORTS_MCPU_NATIVE)
+    if(CXX_SUPPORTS_MCPU_NATIVE AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -mcpu=native")
+    endif()
+endif()
+
 # Detect Jetson GPU architecture (sm_72 for Xavier, sm_87 for Orin)
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     execute_process(COMMAND nvidia-smi --query-gpu=name --format=csv,noheader

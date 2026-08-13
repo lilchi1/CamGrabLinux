@@ -110,6 +110,8 @@ void GstDecoder::scanPacket(int codecId, const uint8_t* data, int size,
                     if (t == 1 || t == 5) hasVcl = true;
                     if (t == 5) isKey = true;
                 }
+                // Оба признака известны — дальше сканировать нечего.
+                if (hasVcl && isKey) return;
             }
             i = nalIdx;
         } else {
@@ -121,9 +123,12 @@ void GstDecoder::scanPacket(int codecId, const uint8_t* data, int size,
 // Проверка, содержит ли пакет B-срез. Разбирается slice-заголовок VCL NAL:
 //  - H.264: slice_type (ue(v)), B если slice_type % 5 == 1 (типы 1,6);
 //  - H.265: slice_type (ue(v)), B если slice_type == 0.
+// Все слайсы одного пакета принадлежат ОДНОМУ кадру → тип одинаков. Достаточно
+// разобрать первый VCL NAL, остальное сканировать не нужно. Для заголовка
+// хватает первых ~64 байт payload (first_mb + slice_type = пара ue(v)).
 // Если разобрать заголовок не удалось — кадр НЕ отбрасываем (conservative).
 bool GstDecoder::hasBSlice(int codecId, const uint8_t* data, int size) {
-    uint8_t rbsp[512];
+    uint8_t rbsp[64];
     int i = 0;
     while (i + 3 < size) {
         // Поиск стартового кода 00 00 01 / 00 00 00 01
@@ -148,7 +153,8 @@ bool GstDecoder::hasBSlice(int codecId, const uint8_t* data, int size) {
                 int nalType = (data[nalStart] >> 1) & 0x3f;
                 // VCL (0..9) с достаточным payload: первый флаг + pps_id + slice_type
                 if (nalType <= 9 && nalSize >= 3) {
-                    int n = ebspToRbsp(data + nalStart + 2, nalSize - 2,
+                    const int cap = std::min(nalSize - 2, (int)sizeof(rbsp));
+                    int n = ebspToRbsp(data + nalStart + 2, cap,
                                        rbsp, (int)sizeof(rbsp));
                     BitReader br(rbsp, n);
                     if (!br.readBit()) { i = nalStart; continue; }  // first_slice_segment=0 — не разбираем
@@ -156,17 +162,20 @@ bool GstDecoder::hasBSlice(int codecId, const uint8_t* data, int size) {
                     br.readUE();                                    // slice_pic_parameter_set_id
                     uint32_t sliceType = br.readUE();               // 0=B, 1=P, 2=I
                     if (br.ok() && sliceType == 0) return true;
+                    if (br.ok()) return false;  // первый VCL разобран — тип кадра известен
                 }
             } else {
                 int nalType = data[nalStart] & 0x1f;
                 // Слайсовые NAL (1 — non-IDR, 5 — IDR)
                 if ((nalType == 1 || nalType == 5) && nalSize >= 2) {
-                    int n = ebspToRbsp(data + nalStart + 1, nalSize - 1,
+                    const int cap = std::min(nalSize - 1, (int)sizeof(rbsp));
+                    int n = ebspToRbsp(data + nalStart + 1, cap,
                                        rbsp, (int)sizeof(rbsp));
                     BitReader br(rbsp, n);
                     br.readUE();                                    // first_mb_in_slice
                     uint32_t sliceType = br.readUE();
                     if (br.ok() && (sliceType % 5) == 1) return true;
+                    if (br.ok()) return false;  // первый VCL разобран — тип кадра известен
                 }
             }
         }
@@ -226,6 +235,55 @@ GstPadProbeReturn GstDecoder::onDecOutProbe(GstPad*, GstPadProbeInfo* info, gpoi
             if (self->m_decTimes.size() > 256) self->m_decTimes.pop_front();
         }
     }
+    return GST_PAD_PROBE_OK;
+}
+
+// Pad-проба на sink-паде appsink: фиксируем время появления кадра в appsink.
+// Совместно с временем забора в pullFrame даёт postDecodeMs — ожидание кадра
+// ПОСЛЕ выхода из декодера (nvvidconv + внутренняя буферизация appsink).
+GstPadProbeReturn GstDecoder::onAppSinkArriveProbe(GstPad*, GstPadProbeInfo* info,
+                                                   gpointer userData) {
+    GstDecoder* self = static_cast<GstDecoder*>(userData);
+    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    if (!buf) return GST_PAD_PROBE_OK;
+    int64_t pts = GST_BUFFER_PTS_IS_VALID(buf) ? (int64_t)GST_BUFFER_PTS(buf) : -1;
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(self->m_mtx);
+    self->m_appSinkArr.emplace_back(pts, now);
+    if (self->m_appSinkArr.size() > 256) self->m_appSinkArr.pop_front();
+    return GST_PAD_PROBE_OK;
+}
+
+// Pad-проба на src-паде appsrc: буфер покидает appsrc (передан в h264parse).
+// Разница с временем pushPacket = время ожидания кадра в очереди appsrc —
+// это главный кандидат на «скрытую очередь» (appsrc с block=FALSE копит
+// буферы, если downstream не успевает).
+GstPadProbeReturn GstDecoder::onAppSrcOutProbe(GstPad*, GstPadProbeInfo* info,
+                                               gpointer userData) {
+    GstDecoder* self = static_cast<GstDecoder*>(userData);
+    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    if (!buf) return GST_PAD_PROBE_OK;
+    int64_t pts = GST_BUFFER_PTS_IS_VALID(buf) ? (int64_t)GST_BUFFER_PTS(buf) : -1;
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(self->m_mtx);
+    self->m_appSrcOut.emplace_back(pts, now);
+    if (self->m_appSrcOut.size() > 256) self->m_appSrcOut.pop_front();
+    return GST_PAD_PROBE_OK;
+}
+
+// Pad-проба на src-паде h264parse: буфер покидает парсер (передан в декодер).
+// Разница с временем выхода из appsrc = время в парсере. Оставшаяся часть
+// pre-decode задержки — ожидание входа в nvv4l2decoder (внутренняя очередь).
+GstPadProbeReturn GstDecoder::onParseOutProbe(GstPad*, GstPadProbeInfo* info,
+                                              gpointer userData) {
+    GstDecoder* self = static_cast<GstDecoder*>(userData);
+    GstBuffer* buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    if (!buf) return GST_PAD_PROBE_OK;
+    int64_t pts = GST_BUFFER_PTS_IS_VALID(buf) ? (int64_t)GST_BUFFER_PTS(buf) : -1;
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(self->m_mtx);
+    self->m_parseOut.emplace_back(pts, now);
+    if (self->m_parseOut.size() > 256) self->m_parseOut.pop_front();
     return GST_PAD_PROBE_OK;
 }
 
@@ -451,14 +509,19 @@ bool GstDecoder::open(int codecId, bool overlaySink, guintptr overlayWindow,
     //    фильтром hasBSlice, переупорядочивание не нужно);
     //  - enable-max-performance=TRUE: убрать троттлинг GPU-клока NVDEC
     //    (на Jetson декодер может работать на пониженной частоте);
-    //  - num-extra-surfaces=0: декодер держит только текущий кадр;
+    //  - num-extra-surfaces=4: НЕ 0! С единственным surface декодер не может
+    //    принять следующий вход, пока выход не забрали — вход блокируется
+    //    нашим pull'ом, кадр висит в парсере ~2 интервала (decode_func≈120 мс).
+    //    Дополнительные поверхности дают декодеру декодировать кадр СРАЗУ по
+    //    пушу (задержка пуш→выход ≈ время декода ~8 мс), а наш loop по-прежнему
+    //    пушит/забирает 1 кадр за итерацию (queue_depth=1);
     //  - output-io-mode=0 (auto): значения DMABUF(4) в этой версии JetPack нет
     //    (диапазон 0..2), DMABUF-ветка недоступна — auto выдаёт NVMM, что
     //    нужно и nvvidconv, и замеру.
     g_object_set(dec,
                  "disable-dpb", TRUE,
                  "enable-max-performance", TRUE,
-                 "num-extra-surfaces", 0,
+                 "num-extra-surfaces", 4,
                  "output-io-mode", 0,  // auto (в JetPack 6 поддерживается 0/2)
                  NULL);
 
@@ -564,6 +627,20 @@ bool GstDecoder::open(int codecId, bool overlaySink, guintptr overlayWindow,
     if (m_decSrcPad) m_decOutProbeId = gst_pad_add_probe(
         m_decSrcPad, GST_PAD_PROBE_TYPE_BUFFER, onDecOutProbe, this, nullptr);
 
+    // Время появления кадра в appsink (для postDecodeMs).
+    m_appSinkPad = gst_element_get_static_pad(m_appsink, "sink");
+    if (m_appSinkPad) m_appSinkProbeId = gst_pad_add_probe(
+        m_appSinkPad, GST_PAD_PROBE_TYPE_BUFFER, onAppSinkArriveProbe, this, nullptr);
+
+    // Время выхода буфера из appsrc и из h264parse (для appSrcHoldMs/parseHoldMs).
+    // Разбивает pre-decode задержку: очередь appsrc / парсер / вход декодера.
+    m_appSrcPad = gst_element_get_static_pad(m_appsrc, "src");
+    if (m_appSrcPad) m_appSrcOutProbeId = gst_pad_add_probe(
+        m_appSrcPad, GST_PAD_PROBE_TYPE_BUFFER, onAppSrcOutProbe, this, nullptr);
+    m_parseSrcPad = gst_element_get_static_pad(parse, "src");
+    if (m_parseSrcPad) m_parseOutProbeId = gst_pad_add_probe(
+        m_parseSrcPad, GST_PAD_PROBE_TYPE_BUFFER, onParseOutProbe, this, nullptr);
+
     // Обработка сообщений шины (ошибки/EOS) синхронно
     GstBus* bus = gst_element_get_bus(m_pipeline);
     if (bus) {
@@ -584,14 +661,24 @@ bool GstDecoder::open(int codecId, bool overlaySink, guintptr overlayWindow,
     return true;
 }
 
-// Отправка одного закодированного пакета в декодер
+// Отправка одного закодированного пакета в декодер (сам анализирует пакет)
 bool GstDecoder::pushPacket(uint8_t* data, int size, int64_t pts) {
+    if (!m_pipeline || !data || size <= 0) return false;
+    bool hasVcl = false, isKey = false;
+    packetInfo(m_codecId, data, size, hasVcl, isKey);
+    const bool isB = packetHasB(m_codecId, data, size);
+    return pushPacketParsed(data, size, pts, hasVcl, isKey, isB);
+}
+
+// pushPacket с готовым анализом пакета — без повторного сканирования NAL.
+bool GstDecoder::pushPacketParsed(uint8_t* data, int size, int64_t pts,
+                                  bool hasVcl, bool isKey, bool isB) {
     if (!m_pipeline || !data || size <= 0) return false;
 
     // ─── Изоляция от B-кадров ──────────────────────────────────────────────
     // Пакет с B-срезом не попадает в декодер вообще: NVDEC не делает reorder,
     // декодируются только I/P-кадры (frame-by-frame, таргет 1-10 мс).
-    if (hasBSlice(m_codecId, data, size)) {
+    if (isB) {
         m_droppedB.fetch_add(1);
         return true;  // отброшен (успешно)
     }
@@ -599,8 +686,6 @@ bool GstDecoder::pushPacket(uint8_t* data, int size, int64_t pts) {
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(m_mtx);
-        bool hasVcl = false, isKey = false;
-        scanPacket(m_codecId, data, size, hasVcl, isKey);
         if (isKey) m_seenKeyframe = true;
         // Время пишем только для пакетов с VCL-срезом после первого ключевого
         // кадра — тогда FIFO строго 1:1 "пакет → кадр" и decode_ms честный.
@@ -684,10 +769,27 @@ bool GstDecoder::pullFrame(HostFrame& hf, DecodeStats& st, int timeoutMs) {
             if (decodeMs < 0.0)
                 decodeMs = m_lastDecodeMs;
 
+            // Ожидание кадра ПОСЛЕ выхода из декодера: время появления в appsink
+            // (pad-проба) → время забора pullFrame. Большое значение = кадр долго
+            // ждал в nvvidconv/очереди после декодирования.
+            double postDecodeMs = -1.0;
+            if (pts >= 0) {
+                std::lock_guard<std::mutex> lock(m_mtx);
+                for (auto it = m_appSinkArr.begin(); it != m_appSinkArr.end(); ++it) {
+                    if (it->first == pts) {
+                        postDecodeMs = std::chrono::duration<double, std::milli>(
+                            now - it->second).count();
+                        m_appSinkArr.erase(it);
+                        break;
+                    }
+                }
+            }
+
             m_width.store(w);
             m_height.store(h);
 
             st.decodeMs = decodeMs;
+            st.postDecodeMs = postDecodeMs;
             st.pushBlockMs = m_lastPushBlockMs.load();
 
             if (m_lastSampleAt != std::chrono::steady_clock::time_point{})
@@ -700,13 +802,39 @@ bool GstDecoder::pullFrame(HostFrame& hf, DecodeStats& st, int timeoutMs) {
                 st.queueDepth = (int)m_pushTimes.size();
             }
 
+            std::chrono::steady_clock::time_point pushAt{};
             {
                 std::lock_guard<std::mutex> lock(m_mtx);
                 if (!m_pushTimes.empty()) {
-                    auto pushAt = m_pushTimes.front();
+                    pushAt = m_pushTimes.front();
                     m_pushTimes.pop_front();
                     st.decodeFuncMs = std::chrono::duration<double, std::milli>(
                         now - pushAt).count();
+                }
+            }
+
+            // Ожидание ДО декодера: разбиваем pre-decode задержку на очередь
+            // appsrc (appSrcHoldMs) и парсер (parseHoldMs) — время каждого
+            // относительно СВОЕГО push (pushAt из FIFO). Остаток
+            // (decodeFuncMs − appSrcHold − parseHold − decodeMs − postDecode)
+            // — ожидание входа в nvv4l2decoder (внутренняя очередь декодера).
+            if (pts >= 0 && pushAt != std::chrono::steady_clock::time_point{}) {
+                std::lock_guard<std::mutex> lock(m_mtx);
+                for (auto it = m_appSrcOut.begin(); it != m_appSrcOut.end(); ++it) {
+                    if (it->first == pts) {
+                        st.appSrcHoldMs = std::chrono::duration<double, std::milli>(
+                            it->second - pushAt).count();
+                        m_appSrcOut.erase(it);
+                        break;
+                    }
+                }
+                for (auto it = m_parseOut.begin(); it != m_parseOut.end(); ++it) {
+                    if (it->first == pts) {
+                        st.parseHoldMs = std::chrono::duration<double, std::milli>(
+                            it->second - pushAt).count();
+                        m_parseOut.erase(it);
+                        break;
+                    }
                 }
             }
 
@@ -764,7 +892,23 @@ void GstDecoder::close() {
             gst_object_unref(m_decSrcPad);
             m_decSrcPad = nullptr;
         }
-        m_decInProbeId = m_decOutProbeId = 0;
+        if (m_appSinkPad) {
+            if (m_appSinkProbeId) gst_pad_remove_probe(m_appSinkPad, m_appSinkProbeId);
+            gst_object_unref(m_appSinkPad);
+            m_appSinkPad = nullptr;
+        }
+        if (m_appSrcPad) {
+            if (m_appSrcOutProbeId) gst_pad_remove_probe(m_appSrcPad, m_appSrcOutProbeId);
+            gst_object_unref(m_appSrcPad);
+            m_appSrcPad = nullptr;
+        }
+        if (m_parseSrcPad) {
+            if (m_parseOutProbeId) gst_pad_remove_probe(m_parseSrcPad, m_parseOutProbeId);
+            gst_object_unref(m_parseSrcPad);
+            m_parseSrcPad = nullptr;
+        }
+        m_decInProbeId = m_decOutProbeId = m_appSinkProbeId = 0;
+        m_appSrcOutProbeId = m_parseOutProbeId = 0;
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
     }
@@ -775,6 +919,9 @@ void GstDecoder::close() {
         m_pushTimes.clear();
         m_decInPts.clear();
         m_decTimes.clear();
+        m_appSinkArr.clear();
+        m_appSrcOut.clear();
+        m_parseOut.clear();
         m_lastDecodeMs = -1.0;
         m_seenKeyframe = false;
     }

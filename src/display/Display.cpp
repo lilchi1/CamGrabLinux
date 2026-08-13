@@ -327,9 +327,27 @@ void DisplayWindow::showFrameFromDevice(int srcW, int srcH,
         // Проверка, что окно не изменилось во время CUDA-обработки
         if (!m_image || !m_image->data) return;
 
-        // Заполнение чёрным (letterbox/pillarbox)
-        memset(m_image->data, 0,
-               static_cast<size_t>(m_height) * (size_t)m_image->bytes_per_line);
+        // Заполнение чёрным только полей letterbox/pillarbox (верх/низ/бока),
+        // а не всего окна: видео-область перезаписывается целиком ниже.
+        {
+            const size_t rowBytes = (size_t)m_image->bytes_per_line;
+            // Верхняя и нижняя полосы (на всю ширину окна)
+            if (offY > 0)
+                memset(m_image->data, 0, (size_t)offY * rowBytes);
+            if (offY + outH < m_height)
+                memset(m_image->data + (size_t)(offY + outH) * rowBytes, 0,
+                       (size_t)(m_height - offY - outH) * rowBytes);
+            // Боковые полосы только в строках видео (левая/правая от кадра)
+            const size_t px = (size_t)m_bpp;
+            const size_t rightBytes = ((size_t)m_width - (size_t)(offX + outW)) * px;
+            if (offX > 0 || rightBytes > 0) {
+                for (int y = 0; y < outH && offY + y < m_height; y++) {
+                    char* base = m_image->data + (size_t)(offY + y) * rowBytes;
+                    if (offX > 0) memset(base, 0, (size_t)offX * px);
+                    if (rightBytes > 0) memset(base + (size_t)(offX + outW) * px, 0, rightBytes);
+                }
+            }
+        }
 
         // Копирование BGRA данных в XImage построчно
         for (int y = 0; y < outH; y++) {

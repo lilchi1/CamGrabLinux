@@ -31,9 +31,12 @@ public:
     struct DecodeStats {
         double decodeMs = -1.0;         // чистое декодирование NVDEC: sink-пад → src-пад
         double decodeFuncMs = -1.0;     // вход pushPacket в декодер → выход кадра из appsink
+        double postDecodeMs = -1.0;     // выход декодера → появление в appsink (конверсия/ожидание)
         double pushBlockMs = -1.0;      // блокировка gst_app_src_push_buffer (backpressure)
         double frameIntervalMs = -1.0;  // интервал между кадрами из appsink
         double displayMs = -1.0;        // время обработки кадра в колбэке (CUDA+X11)
+        double appSrcHoldMs = -1.0;     // push → выход буфера из appsrc (ожидание в очереди appsrc)
+        double parseHoldMs = -1.0;      // appsrc → выход из h264parse (обработка парсером)
         int queueDepth = 0;             // число невостребованных пушей (глубина буферизации)
     };
 
@@ -55,8 +58,15 @@ public:
     // Закрытие декодера и остановка GStreamer-пайплайна
     void close();
 
-    // Отправка одного закодированного пакета (Annex-B byte-stream) в декодер
+    // Отправка одного закодированного пакета (Annex-B byte-stream) в декодер.
+    // Сам сканирует пакет (B-срезы / VCL / ключевой кадр).
     bool pushPacket(uint8_t* data, int size, int64_t pts);
+
+    // pushPacket с уже готовым анализом пакета (hasVcl/isKey/isB от packetInfo/
+    // packetHasB). Экономит повторное сканирование пакета — оба вызова были бы
+    // полным проходом по NAL-байт-стриму. Вызывается из hot-цикла камеры.
+    bool pushPacketParsed(uint8_t* data, int size, int64_t pts,
+                          bool hasVcl, bool isKey, bool isB);
 
     // Синхронный забор кадра из appsink (только syncMode). Ждёт до timeoutMs.
     // При успехе заполняет hf (пиксели NV12) и статистику st; в overlay-режиме
@@ -135,6 +145,28 @@ private:
     std::deque<std::pair<int64_t, double>> m_decTimes;
     double m_lastDecodeMs = -1.0;     // последний измеренный decodeMs (fallback при PTS=-1)
 
+    // ─── Замер задержки «выход декодера → appsink» (pad-проба на appsink) ──────
+    // m_appSinkArr: (PTS → время появления буфера в sink-паде appsink).
+    // postDecodeMs = время прихода в appsink минус время забора pullFrame —
+    // изолирует ожидание ПОСЛЕ декодера (nvvidconv/очереди) от задержки
+    // appsrc/parser/декодера.
+    GstPad* m_appSinkPad = nullptr;
+    gulong  m_appSinkProbeId = 0;
+    std::deque<std::pair<int64_t, std::chrono::steady_clock::time_point>> m_appSinkArr;
+
+    // ─── Замер задержки ДО декодера: где кадр стоит в ожидании ─────────────
+    // m_appSrcOut: (PTS → время выхода буфера из appsrc src-пад) — сколько
+    //   кадр пробыл в очереди appsrc после pushPacket (m_appSrcHoldMs).
+    // m_parseOut:  (PTS → время выхода буфера из h264parse src-пад) — время
+    //   в парсере (m_parseHoldMs). Разбивает pre-decode задержку на
+    //   appsrc-очередь / парсер / ожидание входа в декодер.
+    GstPad* m_appSrcPad = nullptr;
+    gulong  m_appSrcOutProbeId = 0;
+    GstPad* m_parseSrcPad = nullptr;
+    gulong  m_parseOutProbeId = 0;
+    std::deque<std::pair<int64_t, std::chrono::steady_clock::time_point>> m_appSrcOut;
+    std::deque<std::pair<int64_t, std::chrono::steady_clock::time_point>> m_parseOut;
+
     // ─── Замер времени декодирования (FIFO push→кадр) ─────────────────────────
     std::chrono::steady_clock::time_point m_lastSampleAt;   // время последнего кадра из appsink
     std::atomic<double> m_lastPushBlockMs;                  // последняя задержка push (мс)
@@ -143,6 +175,9 @@ private:
     static GstBusSyncReply onBusMessage(GstBus* bus, GstMessage* msg, gpointer userData);
     static GstPadProbeReturn onDecInProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
     static GstPadProbeReturn onDecOutProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
+    static GstPadProbeReturn onAppSinkArriveProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
+    static GstPadProbeReturn onAppSrcOutProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
+    static GstPadProbeReturn onParseOutProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
     static void scanPacket(int codecId, const uint8_t* data, int size,
                            bool& hasVcl, bool& isKey);
     static bool hasBSlice(int codecId, const uint8_t* data, int size);

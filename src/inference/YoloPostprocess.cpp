@@ -97,6 +97,8 @@ Detections YoloPostprocess::run(const float* output, float scaleX, float scaleY,
     m_cands.resize(n);
     cudaMemcpy(m_cands.data(), m_dCands, (size_t)n * sizeof(YoloCandidate), cudaMemcpyDeviceToHost);
 
+    dets.reserve(n);
+
     // NMS: сортировка по уверенности, подавление по IoU в пределах класса.
     std::sort(m_cands.begin(), m_cands.end(),
               [](const YoloCandidate& a, const YoloCandidate& b) { return a.score > b.score; });

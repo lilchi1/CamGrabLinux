@@ -144,8 +144,8 @@ bool CvcudaPreprocessor::preprocess(const GpuFrame& frame)
         }
 
         // RGB -> letterbox inner размер (пропорции сохранены), CV-CUDA.
-        m_rgbBatch->clear();
-        m_rgbBatch->pushBack(*m_rgb);
+        // Батчи заполнены один раз в ensureBuffers (m_rgb/m_resized не меняются
+        // между кадрами) — без clear/pushBack на каждый кадр.
         (*m_opResize)(m_stream, *m_rgbBatch, *m_resizedBatch, NVCV_INTERP_LINEAR);
 
         // Паддинг до m_outW x m_outH + normalize 1/255 + NCHW F32.

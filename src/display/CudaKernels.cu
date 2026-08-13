@@ -72,16 +72,20 @@ __device__ __forceinline__ void sampleUV_bilinear(const uint8_t* uvPlane, int sr
 
 // Ядро NV12→BGRA с билинейным масштабированием.
 // Каждый поток генерирует один BGRA пиксель (4 байта в dst, соответствует XImage ZPixmap 32bpp).
-__global__ void nv12ToBgrScaleKernel(const uint8_t* yPlane, const uint8_t* uvPlane,
-                                      int srcStride, int srcW, int srcH,
-                                      uint8_t* dst, int dstStride, int dstW, int dstH) {
+__global__ void nv12ToBgrScaleKernel(const uint8_t* __restrict__ yPlane,
+                                     const uint8_t* __restrict__ uvPlane,
+                                     int srcStride, int srcW, int srcH,
+                                     uint8_t* __restrict__ dst, int dstStride,
+                                     int dstW, int dstH,
+                                     float invScaleX, float invScaleY) {
     int dx = blockIdx.x * blockDim.x + threadIdx.x;
     int dy = blockIdx.y * blockDim.y + threadIdx.y;
     if (dx >= dstW || dy >= dstH) return;
 
-    // Вычисление координат исходного пикселя с учётом масштабирования
-    float fx = (float)dx * srcW / dstW;
-    float fy = (float)dy * srcH / dstH;
+    // Вычисление координат исходного пикселя (множители предвычислены на хосте —
+    // без деления на каждый пиксель)
+    float fx = (float)dx * invScaleX;
+    float fy = (float)dy * invScaleY;
 
     // Билинейная выборка Y и UV из NV12 плоскостей
     uint8_t yVal = sampleY_bilinear(yPlane, srcStride, fx, fy, srcW, srcH);
@@ -101,9 +105,10 @@ __global__ void nv12ToBgrScaleKernel(const uint8_t* yPlane, const uint8_t* uvPla
 }
 
 // Ядро NV12→BGRA без масштабирования (размер src == dst), каждый поток обрабатывает блок 2×2
-__global__ void nv12ToBgrKernel(const uint8_t* yPlane, const uint8_t* uvPlane,
-                                 int srcStride, int width, int height,
-                                 uint8_t* dst, int dstStride) {
+__global__ void nv12ToBgrKernel(const uint8_t* __restrict__ yPlane,
+                                const uint8_t* __restrict__ uvPlane,
+                                int srcStride, int width, int height,
+                                uint8_t* __restrict__ dst, int dstStride) {
     // Каждый поток обрабатывает блок 2×2 пикселя
     int bx = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
     int by = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
@@ -130,9 +135,10 @@ __global__ void nv12ToBgrKernel(const uint8_t* yPlane, const uint8_t* uvPlane,
 
 // Ядро NV12→RGB8 (interleaved, без масштабирования), 2×2 блок на поток.
 // Используется для препроцессинга YOLO (CV-CUDA не умеет напрямую читать NV12).
-__global__ void nv12ToRgbKernel(const uint8_t* yPlane, const uint8_t* uvPlane,
+__global__ void nv12ToRgbKernel(const uint8_t* __restrict__ yPlane,
+                                const uint8_t* __restrict__ uvPlane,
                                 int srcStride, int width, int height,
-                                uint8_t* dst, int dstStride) {
+                                uint8_t* __restrict__ dst, int dstStride) {
     int bx = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
     int by = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
     if (bx >= width || by >= height) return;
@@ -157,19 +163,21 @@ __global__ void nv12ToRgbKernel(const uint8_t* yPlane, const uint8_t* uvPlane,
 // Ядро letterbox-паддинг + normalize: RGB8 (rgbW x rgbH) → NCHW F32 [1,3,outH,outW].
 // Контент размещается с отступом (padX, padY), фон — значение 114 (как в YOLO),
 // масштаб 1/255. Строки/каналы индексируются через явные шаги (элементы).
-__global__ void letterboxNchwKernel(const uint8_t* rgb, int rgbStride, int rgbW, int rgbH,
-                                    float* dst, int cStride, int hStride, int wStride,
-                                    int outW, int outH, int padX, int padY) {
+__global__ void letterboxNchwKernel(const uint8_t* __restrict__ rgb, int rgbStride,
+                                    int rgbW, int rgbH,
+                                    float* __restrict__ dst, int cStride, int hStride,
+                                    int wStride, int outW, int outH, int padX, int padY) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= outW || y >= outH) return;
 
-    const float border = 114.0f / 255.0f;
+    const float inv255 = 1.0f / 255.0f;
+    const float border = 114.0f * inv255;
     float r, g, b;
     int sx = x - padX, sy = y - padY;
     if (sx >= 0 && sx < rgbW && sy >= 0 && sy < rgbH) {
         const uint8_t* p = rgb + sy * rgbStride + sx * 3;
-        r = p[0] / 255.0f; g = p[1] / 255.0f; b = p[2] / 255.0f;
+        r = p[0] * inv255; g = p[1] * inv255; b = p[2] * inv255;
     } else {
         r = g = b = border;
     }
@@ -300,8 +308,11 @@ cudaError_t cudaNv12ToBgrScale(const uint8_t* yPlane, const uint8_t* uvPlane,
                                 cudaStream_t stream) {
     dim3 block(16, 16);
     dim3 grid((dstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y);
+    const float invScaleX = (float)srcW / dstW;
+    const float invScaleY = (float)srcH / dstH;
     nv12ToBgrScaleKernel<<<grid, block, 0, stream>>>(yPlane, uvPlane, srcStride, srcW, srcH,
-                                                      d_dst, dstStride, dstW, dstH);
+                                                     d_dst, dstStride, dstW, dstH,
+                                                     invScaleX, invScaleY);
     return cudaGetLastError();
 }
 
