@@ -14,6 +14,7 @@ volatile std::sig_atomic_t g_running = 1;
 bool g_benchmarkMode = false;      // Режим бенчмарка (без отображения)
 int g_winWidth  = 1600;            // Размер окна отображения (по умолчанию)
 int g_winHeight = 900;
+bool g_camResRequested = false;    // -w/-H заданы явно → запросить у камеры это разрешение
 std::string g_displayMode = "xvimagesink"; // Режим отображения: xvimagesink (default) | cuda
 
 // Детекция YOLO (TensorRT engine, вход 640×640)
@@ -105,8 +106,8 @@ static void printUsage(const char* progname) {
     std::cout << "Использование: " << progname << " [опции]" << std::endl;
     std::cout << "Опции:" << std::endl;
     std::cout << "  -b, --benchmark    Режим бенчмарка (без отображения окна)" << std::endl;
-    std::cout << "  -w, --width W      Ширина окна отображения (по умолчанию 1600)" << std::endl;
-    std::cout << "  -H, --height H     Высота окна отображения (по умолчанию 900)" << std::endl;
+    std::cout << "  -w, --width W      Ширина: размер окна и запрашиваемое у камеры разрешение (по умолчанию 1600)" << std::endl;
+    std::cout << "  -H, --height H     Высота: размер окна и запрашиваемое у камеры разрешение (по умолчанию 900)" << std::endl;
     std::cout << "  -d, --display M    Режим отображения: xvimagesink (по умолчанию) | cuda" << std::endl;
     std::cout << "  -m, --model PATH   TensorRT .engine (YOLOv8/v11/v12, вход 640x640)" << std::endl;
     std::cout << "  -l, --labels PATH  Файл имён классов (по одному в строке, COCO=80)" << std::endl;
@@ -163,12 +164,12 @@ int main(int argc, char* argv[]) {
                 break;
             case 'w': {
                 int v = std::atoi(optarg);
-                if (v > 0) g_winWidth = v;
+                if (v > 0) { g_winWidth = v; g_camResRequested = true; }
                 break;
             }
             case 'H': {
                 int v = std::atoi(optarg);
-                if (v > 0) g_winHeight = v;
+                if (v > 0) { g_winHeight = v; g_camResRequested = true; }
                 break;
             }
             case 'd': {

@@ -43,7 +43,7 @@ Options (see `--help`):
 | Flag | Meaning |
 |---|---|
 | `-b, --benchmark` | benchmark mode, no window (timings only) |
-| `-w, -H` | window width/height (default 1600x900) |
+| `-w, -H` | window width/height (default 1600x900); when passed explicitly, the same resolution is requested from the camera (`?width=W&height=H` appended to the RTSP URL) |
 | `-d, --display M` | `xvimagesink` (default) or `cuda` |
 | `-m, --model PATH` | TensorRT engine for YOLO detection |
 | `-l, --labels PATH` | class names file |

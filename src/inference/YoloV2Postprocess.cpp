@@ -37,19 +37,32 @@ YoloV2Postprocess::YoloV2Postprocess(int numClasses, float confThreshold, float 
     , m_numAnchors(numAnchors)
     , m_stride(stride)
 {
-    if (m_grid <= 0 || m_numAnchors <= 0 || m_numClasses <= 0 || m_stride <= 0 ||
-        (int)anchors.size() < 2 * m_numAnchors)
-    {
-        fprintf(stderr, "[YoloV2Postprocess] invalid params (classes=%d grid=%d anchors=%zu/%d)\n",
+    // Дефолтные якоря COCO YAD2K (пиксели входа 608/416) — используются, если
+    // переданный вектор мал или параметры некорректны.
+    static const float kDefAnchors[] = {
+        18.32736f, 21.67632f,
+        59.98272f, 66.00096f,
+        106.82976f, 175.17888f,
+        252.25024f, 112.88896f,
+        312.65664f, 293.38496f,
+    };
+
+    std::vector<float> useAnchors = anchors;
+    bool bad = (m_grid <= 0 || m_numAnchors <= 0 || m_numClasses <= 0 || m_stride <= 0 ||
+                (int)useAnchors.size() < 2 * m_numAnchors);
+    if (bad) {
+        fprintf(stderr, "[YoloV2Postprocess] invalid params (classes=%d grid=%d anchors=%zu/%d) "
+                        "— использую дефолты\n",
                 m_numClasses, m_grid, anchors.size(), 2 * m_numAnchors);
         m_grid = 19;
         m_numAnchors = 5;
         m_numClasses = 80;
         m_stride = 32;
+        useAnchors.assign(kDefAnchors, kDefAnchors + 10);
     }
 
     if (cudaMalloc(&m_dAnchors, (size_t)(2 * m_numAnchors) * sizeof(float)) != cudaSuccess ||
-        cudaMemcpy(m_dAnchors, anchors.data(), (size_t)(2 * m_numAnchors) * sizeof(float),
+        cudaMemcpy(m_dAnchors, useAnchors.data(), (size_t)(2 * m_numAnchors) * sizeof(float),
                    cudaMemcpyHostToDevice) != cudaSuccess)
     {
         fprintf(stderr, "[YoloV2Postprocess] cudaMalloc/copy anchors failed\n");

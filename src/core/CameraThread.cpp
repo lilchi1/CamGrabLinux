@@ -228,20 +228,6 @@ void cameraThread(std::string url, int camIdx) {
         }
         if (hasVcl) vclPushes++;
 
-        static int dbgN = 0;
-        {
-            static FILE* dbgF = fopen("/tmp/opencode/apppkts.bin", "wb");
-            if (dbgF) {
-                uint32_t len = pktSize;
-                fwrite(&len, 4, 1, dbgF);
-                fwrite(pktData, 1, pktSize, dbgF);
-            }
-            if (dbgN++ < 40)
-                fprintf(stderr, "[DBG] pkt size=%d vcl=%d key=%d b=%d first=%02x %02x %02x %02x %02x %02x %02x %02x\n",
-                        pktSize, hasVcl, isKey, GstDecoder::packetHasB(codecId, pktData, pktSize),
-                        pktData[0], pktData[1], pktData[2], pktData[3], pktData[4], pktData[5], pktData[6], pktData[7]);
-        }
-
         // B-кадр: pushPacket отбросит его ДО декодера (hasBSlice) — выхода из
         // NVDEC не будет, ждать его в pullFrame бессмысленно (мёртвое ожидание
         // таймаута на каждый B-кадр потока).

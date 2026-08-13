@@ -1,5 +1,6 @@
 // RtspReader.cpp — Реализация чтения RTSP через FFmpeg AVFormatContext + битстрим-фильтр.
 #include "headers.h"
+#include <cstdio>
 
 RtspReader::RtspReader()
     : m_fmtCtx(nullptr), m_videoStreamIdx(-1), m_codecId(0),
@@ -19,7 +20,7 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
     // prefer_tcp заставляет пробовать TCP первым, prefer_udp не существует.
     // RTSP-сигнализация (DESCRIBE/SETUP/PLAY) в FFmpeg всегда идёт по TCP:554.
     av_dict_set(&opts, "rtsp_transport", "udp", 0);
-    
+
     // ─── Минимальная задержка ──────────────────────────────────────────────
     char tbuf[32];
     snprintf(tbuf, sizeof(tbuf), "%d", timeoutSec * 1000000);
@@ -48,7 +49,26 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
     // Установка таймаута для сокетов
     av_dict_set(&opts, "rw_timeout", tbuf, 0);
     
-    int ret = avformat_open_input(&m_fmtCtx, url.c_str(), nullptr, &opts);
+    // ─── Запрос разрешения у камеры ────────────────────────────────────────
+    // FFmpeg-RTSP не умеет сам запрашивать разрешение (см. `ffmpeg -h demuxer=rtsp`),
+    // поэтому при явно заданных -w/-H добавляем vendor-параметры width/height
+    // к RTSP-URL. Большинство IP-камер (Hikvision/Dahua/ONVIF-совместимые)
+    // воспринимают их в query-строке; если камера игнорирует — поток просто
+    // придёт в исходном разрешении.
+    std::string openUrl = url;
+    if (g_camResRequested) {
+        std::string q;
+        if (g_winWidth > 0)
+            q += (q.empty() ? "" : "&") + std::string("width=") + std::to_string(g_winWidth);
+        if (g_winHeight > 0)
+            q += (q.empty() ? "" : "&") + std::string("height=") + std::to_string(g_winHeight);
+        if (!q.empty()) {
+            openUrl += (openUrl.find('?') == std::string::npos ? "?" : "&") + q;
+            logWrite("INFO", url, "Запрос разрешения у камеры: " + q);
+        }
+    }
+
+    int ret = avformat_open_input(&m_fmtCtx, openUrl.c_str(), nullptr, &opts);
     av_dict_free(&opts);
     if (ret < 0) { 
         logWrite("ERROR", url, "Не удалось открыть RTSP (только UDP)");
@@ -140,6 +160,9 @@ bool RtspReader::readPacket(uint8_t*& data, int& size, int64_t& pts) {
                 av_packet_unref(m_pkt);
                 return false;
             }
+            // Освободить предыдущий вывод фильтра перед новым приёмом
+            // (av_bsf_receive_packet отдаёт реф на внутренний буфер фильтра).
+            av_packet_unref(m_filteredPkt);
             if (av_bsf_receive_packet(m_bsfCtx, m_filteredPkt) < 0) {
                 av_packet_unref(m_pkt);
                 return false;

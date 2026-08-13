@@ -174,9 +174,10 @@ __global__ void letterboxNchwKernel(const uint8_t* rgb, int rgbStride, int rgbW,
         r = g = b = border;
     }
     int base = y * hStride + x * wStride;
-    dst[cStride + base] = r;
-    dst[2 * cStride + base] = g;
-    dst[0 * cStride + base] = b;
+    // Каналы NCHW в порядке RGB (как обучена YOLO на COCO).
+    dst[0 * cStride + base] = r;
+    dst[1 * cStride + base] = g;
+    dst[2 * cStride + base] = b;
 }
 
 // Ядро декода YOLOv8/v11/v12 (anchor-free): NCHW [1, (4+nc), anchors].
