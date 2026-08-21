@@ -9,46 +9,25 @@ RtspReader::RtspReader()
 
 RtspReader::~RtspReader() { close(); }
 
-// Открытие RTSP потока: ТОЛЬКО UDP с минимальной задержкой
+// Открытие RTSP потока с минимальной задержкой.
+// Транспорт определяется --rtsp-transport: tcp / udp / auto (udp → tcp fallback).
+// Важно: RTSP-сигнализация (DESCRIBE/SETUP/PLAY) всегда идёт по TCP:554, опция
+// rtsp_transport влияет только на медиапоток (RTP). Поэтому «Connection refused»
+// по tcp://...:554 означает, что камера не приняла управляющее соединение —
+// обычно это занятый лимит RTSP-сессий, неверный порт или firewall.
 bool RtspReader::open(const std::string& url, int timeoutSec) {
     close();
 
-    AVDictionary* opts = nullptr;
-    
-    // ─── ТОЛЬКО UDP транспорт ──────────────────────────────────────────────
-    // rtsp_transport=udp — RTP-медиапотоки по UDP. Опцию rtsp_flags не задаём:
-    // prefer_tcp заставляет пробовать TCP первым, prefer_udp не существует.
-    // RTSP-сигнализация (DESCRIBE/SETUP/PLAY) в FFmpeg всегда идёт по TCP:554.
-    av_dict_set(&opts, "rtsp_transport", "udp", 0);
+    // ─── Порядок попыток транспорта ────────────────────────────────────────
+    std::vector<std::string> transports;
+    if (g_rtspTransport == "tcp")      transports = { "tcp" };
+    else if (g_rtspTransport == "udp") transports = { "udp" };
+    else                               transports = { "udp", "tcp" };  // auto
 
-    // ─── Минимальная задержка ──────────────────────────────────────────────
+    // ─── Минимальная задержка: общие опции ────────────────────────────────
     char tbuf[32];
     snprintf(tbuf, sizeof(tbuf), "%d", timeoutSec * 1000000);
-    av_dict_set(&opts, "stimeout", tbuf, 0);
-    
-    av_dict_set(&opts, "fflags", "nobuffer", 0);           // Отключить буферизацию
-    av_dict_set(&opts, "flags", "low_delay", 0);           // Режим низкой задержки
-    av_dict_set(&opts, "max_delay", "0", 0);               // Нулевая задержка
-    av_dict_set(&opts, "probesize", "32", 0);              // Минимальный размер для определения формата
-    av_dict_set(&opts, "analyzeduration", "0", 0);         // Не анализировать длительно
-    
-    // ─── Отключить переупорядочивание ──────────────────────────────────────
-    av_dict_set(&opts, "reorder_queue_size", "0", 0);      // Без переупорядочивания
-    
-    // ─── Прямой (без буферизации) доступ к сокету ────────────────────────────
-    // Замечание: сам фильтр B-кадров живёт в GstDecoder::pushPacket — пакеты с
-    // B-срезами отбрасываются ДО декодера (проект изолирован от B-кадров).
-    av_dict_set(&opts, "avio_flags", "direct", 0);
-    
-    // ─── Увеличенный сокетный буфер для UDP ────────────────────────────────
-    // Предупреждение: нужно настроить ядро: sudo sysctl -w net.core.rmem_max=8388608
-    av_dict_set(&opts, "buffer_size", "4194304", 0);
 
-    m_fmtCtx = avformat_alloc_context();
-    
-    // Установка таймаута для сокетов
-    av_dict_set(&opts, "rw_timeout", tbuf, 0);
-    
     // ─── Запрос разрешения у камеры ────────────────────────────────────────
     // FFmpeg-RTSP не умеет сам запрашивать разрешение (см. `ffmpeg -h demuxer=rtsp`),
     // поэтому при явно заданных -w/-H добавляем vendor-параметры width/height
@@ -68,21 +47,58 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
         }
     }
 
-    int ret = avformat_open_input(&m_fmtCtx, openUrl.c_str(), nullptr, &opts);
-    av_dict_free(&opts);
-    if (ret < 0) { 
-        logWrite("ERROR", url, "Не удалось открыть RTSP (только UDP)");
-        close(); 
-        return false; 
+    // ─── Попытки открытия: каждая со своими опциями ────────────────────────
+    std::string usedTransport;
+    int lastRet = -1;
+    for (const auto& tr : transports) {
+        AVDictionary* opts = nullptr;
+        av_dict_set(&opts, "rtsp_transport", tr.c_str(), 0);
+        av_dict_set(&opts, "stimeout", tbuf, 0);
+        av_dict_set(&opts, "fflags", "nobuffer", 0);          // Отключить буферизацию
+        av_dict_set(&opts, "flags", "low_delay", 0);          // Режим низкой задержки
+        av_dict_set(&opts, "max_delay", "0", 0);              // Нулевая задержка
+        av_dict_set(&opts, "probesize", "32", 0);             // Минимальный размер
+        av_dict_set(&opts, "analyzeduration", "0", 0);        // Не анализировать долго
+        av_dict_set(&opts, "reorder_queue_size", "0", 0);     // Без переупорядочивания
+        av_dict_set(&opts, "avio_flags", "direct", 0);        // Прямой доступ к сокету
+        av_dict_set(&opts, "buffer_size", "4194304", 0);      // Сокетный буфер UDP
+        av_dict_set(&opts, "rw_timeout", tbuf, 0);
+
+        m_fmtCtx = avformat_alloc_context();
+        int ret = avformat_open_input(&m_fmtCtx, openUrl.c_str(), nullptr, &opts);
+        av_dict_free(&opts);
+        if (ret >= 0) {
+            usedTransport = tr;
+            lastRet = ret;
+            break;
+        }
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = { 0 };
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        logWrite("WARN", url, "RTSP-транспорт " + tr + " не открылся: " + errbuf);
+        close();
+        m_fmtCtx = nullptr;
+        lastRet = ret;
     }
 
-    // Проверка, что мы действительно используем UDP
+    if (!m_fmtCtx) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = { 0 };
+        av_strerror(lastRet, errbuf, sizeof(errbuf));
+        logWrite("ERROR", url, std::string("Не удалось открыть RTSP поток: ") + errbuf);
+        logWrite("ERROR", url,
+                 "Проверьте URL/порт, число RTSP-сессий камеры (обычно лимит 1-2, "
+                 "второе подключение к той же камере отклоняется) и firewall.");
+        return false;
+    }
+
+    logWrite("INFO", url, "RTSP открыт (транспорт медиа: " + usedTransport + ")");
+
+    // Проверка, что мы действительно используем нужный транспорт
     if (m_fmtCtx->iformat && m_fmtCtx->iformat->name) {
         logWrite("INFO", url, std::string("Формат: ") + m_fmtCtx->iformat->name);
     }
 
     // Получение информации о потоках с минимальной задержкой
-    ret = avformat_find_stream_info(m_fmtCtx, nullptr);
+    int ret = avformat_find_stream_info(m_fmtCtx, nullptr);
     if (ret < 0) { close(); return false; }
 
     // Поиск первого видеопотока
@@ -128,7 +144,7 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
         }
     }
 
-    logWrite("INFO", url, "RTSP открыт: ТОЛЬКО UDP, low_delay, без буферизации, без переупорядочивания");
+    logWrite("INFO", url, "RTSP открыт: " + usedTransport + ", low_delay, без буферизации, без переупорядочивания");
     return true;
 }
 

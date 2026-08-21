@@ -16,24 +16,27 @@
     (ставит torch, tensorrt, onnx, onnxslim, pycuda и пр.)
 
 Примеры:
-    python3 convert_pt_to_engine.py --pt yolo26n.pt                       # fp16 (по умолчанию)
+    python3 convert_pt_to_engine.py --pt yolo26n.pt                          # fp16 (по умолчанию)
     python3 convert_pt_to_engine.py --pt yolo26n.pt --precision fp32
-    python3 convert_pt_to_engine.py --pt yolo26n.pt --precision int8 \
-        --calib-dir /data/calib_images
+    python3 convert_pt_to_engine.py --pt yolo26n.pt --precision fp32 fp16 int8 \
+        --calib-dir /data/calib_images                                    # сразу все три
     python3 convert_pt_to_engine.py --pt yolo26n.pt --precision int8 \
         --data /data/coco8.yaml --fraction 0.5
+
+Память (важно для Jetson с общей CPU/GPU RAM):
+    Экспорт ONNX выполняется в ОТДЕЛЬНОМ под-процессе, который завершается и
+    освобождает torch до начала сборки engine. Это нужно, т.к. torch держит
+    ~1.5-2 ГБ, а на сборку TensorRT их не остаётся (NvMapMemAlloc error 12,
+    "terminate called without an active exception"). Перед сборкой проверьте
+    свободную память: free -h. Сборка занимает несколько минут — не прерывайте.
 """
 import argparse
 import os
+import subprocess
 import sys
 
 import cv2
 import numpy as np
-
-try:
-    from ultralytics import YOLO
-except ImportError:
-    sys.exit("ultralytics не установлен — выполните: pip install 'ultralytics[export]'")
 
 try:
     import tensorrt as trt
@@ -149,13 +152,17 @@ class ImageCalibrator(trt.IInt8EntropyCalibrator2):
 # ─────────────────────────── сборка engine ───────────────────────────────
 
 
-def build_engine(args):
-    """.pt -> ONNX (ultralytics, CPU) -> .engine (TensorRT, GPU)."""
-    precision = args.precision
-    print(f"\n=== {os.path.basename(args.pt)} -> TensorRT ({precision}) ===")
-    print(f"    imgsz={args.imgsz}, batch={args.batch}, workspace={args.workspace}GB")
+def export_onnx(args):
+    """.pt -> ONNX (ultralytics, CPU). ONNX экспортируется один раз.
 
-    # ── 1) .pt -> .onnx (ultralytics, официальный; torch на CPU) ─────────
+    Загружает torch/ultralytics, поэтому должен вызываться в отдельном процессе
+    (--export-only), чтобы освободить память до сборки TensorRT.
+    """
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        sys.exit("ultralytics не установлен — выполните: pip install 'ultralytics[export]'")
+
     try:
         model = YOLO(args.pt)
     except Exception as e:
@@ -168,29 +175,34 @@ def build_engine(args):
             imgsz=args.imgsz,
             batch=args.batch,
             device="cpu",
+            opset=13,
+            end2end=False,
+            nms=False,
             simplify=True,
         )
     except Exception as e:
         sys.exit(f"Экспорт ONNX завершился ошибкой: {e}")
     onnx_path = str(onnx_path)
     print(f"    ONNX: {onnx_path}")
+    return onnx_path
 
-    # ── 2) .onnx -> .engine (TensorRT Python API, GPU) ────────────────────
+
+def build_engine(args, onnx_path, precision):
+    """.onnx -> .engine (TensorRT, GPU) для одной точности."""
+    print(f"\n=== {os.path.basename(args.pt)} -> TensorRT ({precision}) ===")
+    print(f"    imgsz={args.imgsz}, batch={args.batch}, workspace={args.workspace}GB")
+
     calib_images = collect_calib_images(args) if precision == "int8" else []
     if precision == "int8":
         print(f"    калибровочных изображений: {len(calib_images)}")
 
+    engine_path = args.engine or default_engine_path(args.pt, precision)
     print(f"[2/2] Сборка engine TensorRT ({precision}, GPU)...")
-    build_trt_engine(onnx_path, args.engine, precision, args.imgsz,
+    build_trt_engine(onnx_path, engine_path, precision, args.imgsz,
                      args.batch, args.workspace, calib_images)
 
-    # ── Уборка промежуточного ONNX ────────────────────────────────────────
-    if os.path.exists(onnx_path) and not args.keep_onnx:
-        os.unlink(onnx_path)
-        print("Удалён промежуточный ONNX:", onnx_path)
-
-    print_engine_io(args.engine)
-    return args.engine
+    print_engine_io(engine_path)
+    return engine_path
 
 
 def build_trt_engine(onnx_path, engine_path, precision, imgsz, batch,
@@ -261,17 +273,25 @@ def default_engine_path(pt, precision):
                         f"{stem}_{precision}.engine")
 
 
+def default_onnx_path(pt):
+    """ONNX сохраняется ultralytics рядом с .pt: <имя>.onnx."""
+    return os.path.splitext(pt)[0] + ".onnx"
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="YOLO *.pt (Ultralytics) -> TensorRT .engine (fp32/fp16/int8)")
     ap.add_argument("--pt", required=True, help="исходная модель .pt")
     ap.add_argument("--engine", default=None,
-                    help="выходной .engine (по умолчанию <имя>_<точность>.engine)")
-    ap.add_argument("--precision", choices=["fp32", "fp16", "int8"], default="fp16")
+                    help="выходной .engine (только для одной точности; "
+                         "по умолчанию <имя>_<точность>.engine)")
+    ap.add_argument("--precision", nargs="+", default=["fp16"],
+                    help="точность: fp32/fp16/int8; можно несколько (по умолчанию fp16)")
     ap.add_argument("--imgsz", type=int, default=640, help="размер входа (640)")
     ap.add_argument("--batch", type=int, default=1)
-    ap.add_argument("--workspace", type=float, default=4.0,
-                    help="лимит памяти TensorRT, ГБ (4)")
+    ap.add_argument("--workspace", type=float, default=0.5,
+                    help="лимит памяти TensorRT, ГБ (по умолчанию 0.5; на Jetson "
+                         "GPU-память = общая RAM, большие значения дают OOM)")
     ap.add_argument("--data", default=None,
                     help="data.yaml для int8-калибровки (val/train = фото)")
     ap.add_argument("--calib-dir", default=None,
@@ -280,18 +300,63 @@ def main():
                     help="какая доля набора идёт на калибровку int8 (0.5 = половина)")
     ap.add_argument("--keep-onnx", action="store_true",
                     help="не удалять промежуточный .onnx")
+    ap.add_argument("--export-only", action="store_true",
+                    help="только экспорт .pt -> .onnx и выход (внутреннее)")
+    ap.add_argument("--build-only", action="store_true",
+                    help="пропустить экспорт, если .onnx уже существует")
     args = ap.parse_args()
 
     if not os.path.isfile(args.pt):
         sys.exit(f"Файл не найден: {args.pt}")
-    if not args.engine:
-        args.engine = default_engine_path(args.pt, args.precision)
 
-    build_engine(args)
+    precisions = [p.lower() for token in args.precision for p in token.split(",")]
+    for p in precisions:
+        if p not in ("fp32", "fp16", "int8"):
+            sys.exit(f"Неизвестная точность: {p} (ожидается fp32/fp16/int8)")
 
+    onnx_path = default_onnx_path(args.pt)
+
+    if args.export_only:
+        export_onnx(args)
+        return
+
+    if args.build_only or os.path.exists(onnx_path):
+        if not os.path.exists(onnx_path):
+            sys.exit("ONNX не найден. Запустите без --build-only.")
+        print(f"ONNX уже существует: {onnx_path} (пропуск экспорта)")
+    else:
+        # Экспорт в отдельном процессе: он загружает torch (~1.5-2 ГБ) и после
+        # завершения освободит память, чтобы её получила сборка TensorRT.
+        print("Экспорт ONNX в отдельном процессе (torch освободит память)...")
+        cmd = [sys.executable, os.path.abspath(__file__), "--export-only",
+               "--pt", args.pt,
+               "--imgsz", str(args.imgsz),
+               "--batch", str(args.batch)]
+        rc = subprocess.run(cmd).returncode
+        if rc != 0:
+            sys.exit(f"Экспорт ONNX завершился с кодом {rc}.")
+        if not os.path.exists(onnx_path):
+            sys.exit(f"Экспорт завершён, но {onnx_path} не найден.")
+    if "int8" in precisions and not args.calib_dir and not args.data:
+        sys.exit("int8 требует калибровочных данных: --calib-dir <папка с фото> "
+                 "или --data <data.yaml>")
+    if len(precisions) > 1 and args.engine:
+        sys.exit("--engine задаёт один файл — укажите одну точность "
+                 "или уберите --engine (пути выведутся сами)")
+
+    engines = [build_engine(args, onnx_path, p) for p in precisions]
+
+    if os.path.exists(onnx_path) and not args.keep_onnx:
+        os.unlink(onnx_path)
+        print("Удалён промежуточный ONNX:", onnx_path)
+
+    print("\nГотовые engine:")
+    for e in engines:
+        print(f"  {e}")
     print("\nЗапуск в проекте:")
-    print(f"  ./Build/rtsp_decoder -d cuda -m {args.engine} "
-          f"-l yolo/coco.names -w 1200 -H 800")
+    for e in engines:
+        print(f"  ./Build/rtsp_decoder -d cuda -m {e} "
+              f"-l yolo/coco.names -w 1200 -H 800")
 
 
 if __name__ == "__main__":

@@ -327,36 +327,37 @@ void DisplayWindow::showFrameFromDevice(int srcW, int srcH,
         // Проверка, что окно не изменилось во время CUDA-обработки
         if (!m_image || !m_image->data) return;
 
-        // Заполнение чёрным только полей letterbox/pillarbox (верх/низ/бока),
-        // а не всего окна: видео-область перезаписывается целиком ниже.
+        // ОПТИМИЗИРОВАННЫЙ letterbox fill: только верх/низ полосы.
+        // Боковые полосы заполняются попутно при копировании строк —
+        // без отдельного прохода memset. Это устраняет outH итераций memset.
         {
             const size_t rowBytes = (size_t)m_image->bytes_per_line;
-            // Верхняя и нижняя полосы (на всю ширину окна)
             if (offY > 0)
                 memset(m_image->data, 0, (size_t)offY * rowBytes);
             if (offY + outH < m_height)
                 memset(m_image->data + (size_t)(offY + outH) * rowBytes, 0,
                        (size_t)(m_height - offY - outH) * rowBytes);
-            // Боковые полосы только в строках видео (левая/правая от кадра)
-            const size_t px = (size_t)m_bpp;
-            const size_t rightBytes = ((size_t)m_width - (size_t)(offX + outW)) * px;
-            if (offX > 0 || rightBytes > 0) {
-                for (int y = 0; y < outH && offY + y < m_height; y++) {
-                    char* base = m_image->data + (size_t)(offY + y) * rowBytes;
-                    if (offX > 0) memset(base, 0, (size_t)offX * px);
-                    if (rightBytes > 0) memset(base + (size_t)(offX + outW) * px, 0, rightBytes);
-                }
-            }
         }
 
-        // Копирование BGRA данных в XImage построчно
-        for (int y = 0; y < outH; y++) {
-            int dstRow = offY + y;
-            if (dstRow >= m_height) break;
-            const uint8_t* srcRow = bgra + y * outStride;
-            char* dstRowPtr = m_image->data + dstRow * m_image->bytes_per_line
-                              + offX * m_bpp;
-            memcpy(dstRowPtr, srcRow, outW * 4);
+        // Копирование BGRA данных в XImage + боковые полосы за один проход.
+        // ОПТИМИЗАЦИЯ: memset для left/right bar совмещён с memcpy строки —
+        // устранён отдельный проход for(y) с memset.
+        {
+            const size_t px = (size_t)m_bpp;
+            const size_t leftBytes = (size_t)offX * px;
+            const size_t rightBytes = ((size_t)m_width - (size_t)(offX + outW)) * px;
+            for (int y = 0; y < outH; y++) {
+                int dstRow = offY + y;
+                if (dstRow >= m_height) break;
+                char* rowBase = m_image->data + (size_t)dstRow * m_image->bytes_per_line;
+                // Left pillarbox
+                if (leftBytes > 0) memset(rowBase, 0, leftBytes);
+                // Video data
+                const uint8_t* srcRow = bgra + y * outStride;
+                memcpy(rowBase + leftBytes, srcRow, outW * 4);
+                // Right pillarbox
+                if (rightBytes > 0) memset(rowBase + leftBytes + (size_t)outW * 4, 0, rightBytes);
+            }
         }
 
         // Оверлей детекций ИИ поверх кадра (тот же буфер XImage)
@@ -375,10 +376,8 @@ void DisplayWindow::showFrameFromDevice(int srcW, int srcH,
         
         m_frameCounter++;
         
-        // Периодический flush для синхронизации (каждые 10 кадров)
-        if (m_frameCounter % 10 == 0) {
-            XFlush(m_display);
-        }
+        // XFlush каждый кадр — минимизация input lag (OCd-friendly)
+        XFlush(m_display);
     }
     // ─── Конец критической секции ──────────────────────────────────────────
 }

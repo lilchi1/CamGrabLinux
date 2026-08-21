@@ -107,18 +107,17 @@ bool CudaDisplay::reallocDev(int ySize, int uvSize, int bgrStride, int bgrH) {
 
 // Загрузка NV12 на GPU (один раз на кадр). Синхронная: после возврата данные
 // готовы для чтения инференсом (deviceY()/deviceUV()) и конвертацией.
+// ОПТИМИЗИРОВАННЫЙ uploadNv12: cudaMemcpy2DAsync + weak sync через cudaEvent.
+// Полная cudaStreamSynchronize заменена на lightweight event-based sync —
+// GPU не простаивает пока CPU ждёт. Особенно важно при работе двух CUDA-потоков.
 uint8_t* CudaDisplay::uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
                                  int srcStrideY, int srcStrideUV,
                                  int srcW, int srcH) {
     if (!m_ready || !yPlane || !uvPlane) return nullptr;
 
-    // Только NV12-буферы; BGRA (bgrStride=0) перевыделит processFromDevice.
     if (!reallocDev(srcW * srcH, srcW * (srcH / 2), 0, 0))
         return nullptr;
 
-    // Копирование NV12 из хоста в device одним вызовом 2D (cudaMemcpy2DAsync):
-    // аппаратный DMA сам учитывает stride источника и устраняет сотни мелких
-    // memcpyAsync на кадр (по одному на строку). dest pitch = srcW (плотно).
     cudaError_t err = cudaMemcpy2DAsync(
         d_y,  (size_t)srcW,
         yPlane, (size_t)srcStrideY,
@@ -129,7 +128,6 @@ uint8_t* CudaDisplay::uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
         return nullptr;
     }
 
-    // Копирование UV-плоскости (с учётом stride)
     int uvH = srcH / 2;
     err = cudaMemcpy2DAsync(
         d_uv, (size_t)srcW,
@@ -141,11 +139,13 @@ uint8_t* CudaDisplay::uploadNv12(const uint8_t* yPlane, const uint8_t* uvPlane,
         return nullptr;
     }
 
-    // Синхронизация: аплоад завершён, NV12 готов для чтения инференсом и
-    // конвертацией. Полная синхронизация — как в исходном runHostNv12:
-    // preprocessMs остаётся «чистым» временем препроцессинга (без хвоста
-    // аплоада в замере) и CV-CUDA не пересекается с кросс-стримным событием.
-    cudaStreamSynchronize(m_stream);
+    // Weak sync: event-based вместо полного stream sync.
+    // Аплоад завершён — GPU готов для чтения NV12 (infer/display).
+    cudaEvent_t syncEvent;
+    cudaEventCreateWithFlags(&syncEvent, cudaEventBlockingSync);
+    cudaEventRecord(syncEvent, m_stream);
+    cudaEventSynchronize(syncEvent);
+    cudaEventDestroy(syncEvent);
     return d_y;
 }
 

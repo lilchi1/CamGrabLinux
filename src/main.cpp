@@ -6,6 +6,7 @@
 #include <getopt.h>
 #include <sys/file.h>
 #include <fcntl.h>
+#include <cerrno>
 
 // Глобальный флаг работы программы (атомарный для безопасного доступа из потоков)
 volatile std::sig_atomic_t g_running = 1;
@@ -16,6 +17,7 @@ int g_winWidth  = 1600;            // Размер окна отображени
 int g_winHeight = 900;
 bool g_camResRequested = false;    // -w/-H заданы явно → запросить у камеры это разрешение
 std::string g_displayMode = "xvimagesink"; // Режим отображения: xvimagesink (default) | cuda
+std::string g_rtspTransport = "auto";      // RTSP транспорт: tcp | udp | auto (udp→tcp fallback)
 
 // Детекция YOLO (TensorRT engine, вход 640×640)
 std::string g_modelPath;                              // путь к .engine (пусто = без детекции)
@@ -81,8 +83,14 @@ static bool acquireSingleInstanceLock() {
 
 // Чтение строки из stdin без блокировки (poll + read). Возвращает true, если
 // строка получена; уважает g_running (ESC/SIGINT прерывают ожидание).
+// EOF stdin (закрытый поток, < /dev/null, systemd) фиксируется флагом g_stdinEof:
+// после него функция возвращает false немедленно — иначе poll на закрытой трубе
+// возвращается мгновенно, а вызывающий цикл превращается в busy-loop на 100% CPU.
 static std::string g_stdinBuf;
+static bool g_stdinEof = false;
+
 static bool readLineAsync(std::string& out, int timeoutMs) {
+    if (g_stdinEof) return false;
     while (g_running) {
         size_t nl = g_stdinBuf.find('\n');
         if (nl != std::string::npos) {
@@ -92,10 +100,20 @@ static bool readLineAsync(std::string& out, int timeoutMs) {
         }
         struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
         int r = poll(&pfd, 1, timeoutMs);
-        if (r <= 0) return false;  // таймаут/ошибка — ввода нет
+        if (r == 0) return false;                 // таймаут — ввода нет
+        if (r < 0) {
+            if (errno == EINTR) continue;         // сигнал — перепроверим g_running
+            if (errno == EBADF || errno == EINVAL) { g_stdinEof = true; return false; }
+            return false;
+        }
         char buf[512];
         ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
-        if (n <= 0) return false;  // EOF
+        if (n == 0) { g_stdinEof = true; return false; }  // EOF
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EBADF || errno == EINVAL) { g_stdinEof = true; return false; }
+            return false;
+        }
         g_stdinBuf.append(buf, (size_t)n);
     }
     return false;
@@ -109,6 +127,8 @@ static void printUsage(const char* progname) {
     std::cout << "  -w, --width W      Ширина: размер окна и запрашиваемое у камеры разрешение (по умолчанию 1600)" << std::endl;
     std::cout << "  -H, --height H     Высота: размер окна и запрашиваемое у камеры разрешение (по умолчанию 900)" << std::endl;
     std::cout << "  -d, --display M    Режим отображения: xvimagesink (по умолчанию) | cuda" << std::endl;
+    std::cout << "  --rtsp-transport T RTSP транспорт: tcp | udp | auto (по умолчанию auto:" << std::endl;
+    std::cout << "                       сначала udp, при отказе tcp)" << std::endl;
     std::cout << "  -m, --model PATH   TensorRT .engine (YOLOv8/v11/v12, вход 640x640)" << std::endl;
     std::cout << "  -l, --labels PATH  Файл имён классов (по одному в строке, COCO=80)" << std::endl;
     std::cout << "  -c, --conf F       Порог уверенности (по умолчанию 0.35)" << std::endl;
@@ -152,6 +172,7 @@ int main(int argc, char* argv[]) {
         {"v2-grid",   required_argument, 0, 1001},
         {"v2-anchors", required_argument, 0, 1002},
         {"in-size",   required_argument, 0, 1003},
+        {"rtsp-transport", required_argument, 0, 1004},
         {"help",      no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
@@ -227,6 +248,17 @@ int main(int argc, char* argv[]) {
                 if (v > 0) g_modelInSize = v;
                 break;
             }
+            case 1004: {
+                std::string t = optarg;
+                if (t == "tcp" || t == "udp" || t == "auto") {
+                    g_rtspTransport = t;
+                } else {
+                    std::cerr << "Неизвестный RTSP транспорт: " << t
+                              << " (допустимо: tcp, udp, auto)" << std::endl;
+                    return 1;
+                }
+                break;
+            }
             case 'h':
                 printUsage(argv[0]);
                 return 0;
@@ -281,10 +313,15 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Введите RTSP URL (через запятую):" << std::endl;
     std::cout << "  Пример: rtsp://admin:pass@192.168.1.100:554/stream" << std::endl;
-    std::cout << "URL: ";
+    std::cout << "URL: " << std::flush;
 
+    // Ждём строку URL через readLineAsync (а не std::getline), чтобы Ctrl+C /
+    // сигнал завершил ожидание, а закрытый stdin (EOF) не дал busy-loop.
     std::string input;
-    std::getline(std::cin, input);
+    while (g_running && !readLineAsync(input, 200)) {
+        if (g_stdinEof) break;   // stdin закрыт — запускаемся без ввода
+    }
+    if (!g_running) return 0;    // завершение по сигналу/ESC
 
     // Парсинг URL из ввода пользователя (разделитель — запятая)
     std::vector<std::string> urls;
@@ -342,9 +379,14 @@ int main(int argc, char* argv[]) {
                 if (opt != "1") break;
                 std::cout << "Введите RTSP URL: " << std::flush;
                 std::string newUrl;
-                while (g_running && !readLineAsync(newUrl, 400)) {}
+                while (g_running && !readLineAsync(newUrl, 400)) {
+                    if (g_stdinEof) break;   // stdin закрыт — ввода не будет
+                }
                 if (!g_running) break;
                 if (!newUrl.empty()) startCamera(newUrl);
+            } else {
+                // Без ввода (в т.ч. при EOF stdin) ждём, не нагружая CPU.
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             continue;
         }
@@ -361,6 +403,10 @@ int main(int argc, char* argv[]) {
             if (cmd == "exit" || cmd == "q") break;
             if (!cmd.empty()) startCamera(cmd);
             hintShown = false;
+        } else {
+            // Таймаут/EOF/сигнал: пауза, чтобы при закрытом stdin (poll на EOF
+            // возвращается мгновенно) цикл не крутился на 100% CPU.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 

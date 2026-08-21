@@ -30,6 +30,7 @@ extern int g_winWidth;                               // Размер окна о
 extern int g_winHeight;
 extern bool g_camResRequested;                       // true, если -w/-H заданы явно → запросить у камеры
 extern std::string g_displayMode;                    // Режим отображения: cuda | xvimagesink (main.cpp)
+extern std::string g_rtspTransport;                  // RTSP транспорт: tcp | udp | auto (main.cpp)
 
 // Детекция YOLO (main.cpp)
 extern std::string g_modelPath;                      // путь к TensorRT .engine (пусто = без детекции)

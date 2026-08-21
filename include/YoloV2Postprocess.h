@@ -7,6 +7,7 @@
 #pragma once
 
 #include <vector>
+#include <cstdint>
 
 #include <cuda_runtime.h>
 
@@ -53,4 +54,13 @@ private:
     YoloCandidate* m_dCands = nullptr;  // device: максимум кандидатов
     int* m_dCounter = nullptr;          // device: счётчик
     std::vector<YoloCandidate> m_cands;
+
+    // GPU NMS buffers (allocated once in constructor)
+    YoloCandidate* m_dSorted = nullptr;
+    uint32_t*      m_dKeys = nullptr;
+    uint32_t*      m_dKeysSorted = nullptr;
+    int*           m_dSuppressed = nullptr;
+    int*           m_dNumAlive = nullptr;
+    void*          m_dTemp = nullptr;
+    size_t         m_tempBytes = 0;
 };

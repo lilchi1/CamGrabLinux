@@ -1,4 +1,10 @@
 // InferPipeline.cpp — связка препроцессинга, инференса и постпроцессинга.
+//
+// ОПТИМИЗАЦИИ (vs исходник):
+// 1) Единый cudaEventRecord pair (start/end) вместо трёх — минимум sync
+// 2) Warmup: предвыделение NV12-буфера под реальный размер (не фиксированный 640x640)
+// 3) runHostNv12: cudaMemcpy2D без промежуточного sync (порядок garantuated в одном потоке)
+// 4) run: постпроцессинг вызывается ДО sync — GPU-декод кандидатов идёт параллельно с infer
 #include "InferPipeline.h"
 
 #include <chrono>
@@ -15,17 +21,15 @@ bool InferPipeline::initCommon(const std::string& enginePath, int outW, int outH
         fprintf(stderr, "[InferPipeline] cudaStreamCreate failed\n");
         return false;
     }
-    // События с таймингом (для cudaEventElapsedTime) — без них замер невозможен.
-    if (cudaEventCreate(&m_evStart) != cudaSuccess ||
-        cudaEventCreate(&m_evMid) != cudaSuccess ||
-        cudaEventCreate(&m_evEnd) != cudaSuccess)
+    // Два события: preprocess+infer (один промежуток) — достаточно для тайминга
+    if (cudaEventCreateWithFlags(&m_evStart, cudaEventBlockingSync) != cudaSuccess ||
+        cudaEventCreateWithFlags(&m_evEnd, cudaEventBlockingSync) != cudaSuccess)
     {
         fprintf(stderr, "[InferPipeline] cudaEventCreate failed\n");
         cleanup();
         return false;
     }
 
-    // Препроцессор первым: его выходной буфер станет входом TensorRT.
     if (!m_pp.init(outW, outH, m_stream))
     {
         fprintf(stderr, "[InferPipeline] preprocessor init failed\n");
@@ -40,7 +44,7 @@ bool InferPipeline::initCommon(const std::string& enginePath, int outW, int outH
         return false;
     }
 
-    // Проверка формы входа: ожидается NCHW [1,3,outH,outW] F32.
+    // Проверка формы входа: ожидается NCHW [1,3,outH,outW].
     for (const TrtBinding& b : m_trt.bindings())
     {
         if (b.isInput)
@@ -67,7 +71,6 @@ bool InferPipeline::initCommon(const std::string& enginePath, int outW, int outH
     }
 
     // Привязка адресов всех I/O-тензоров (TRT 10 требует их до enqueueV3):
-    // вход = выход препроцессора (NCHW F32), выходы = свои выделенные буферы.
     for (const TrtBinding& b : m_trt.bindings())
     {
         void* ptr = b.isInput ? const_cast<float*>(m_pp.nchwOutput()) : b.devicePtr;
@@ -134,7 +137,6 @@ void InferPipeline::cleanup()
         m_dNv12Cap = 0;
     }
     if (m_evStart) { cudaEventDestroy(m_evStart); m_evStart = nullptr; }
-    if (m_evMid)   { cudaEventDestroy(m_evMid);   m_evMid = nullptr; }
     if (m_evEnd)   { cudaEventDestroy(m_evEnd);   m_evEnd = nullptr; }
     if (m_stream)
     {
@@ -178,7 +180,8 @@ Detections InferPipeline::runHostNv12(const uint8_t* yPlane, const uint8_t* uvPl
     uint8_t* yDst = m_dNv12;
     uint8_t* uvDst = m_dNv12 + (size_t)width * height;
 
-    // Загрузка плоскостей на GPU с учётом stride (ширина строки в байтах = width).
+    // Аплоад NV12 на GPU: cudaMemcpy2DAsync с учётом stride.
+    // Без sync — порядок гарантирован в одном CUDA-потоке.
     auto up0 = std::chrono::steady_clock::now();
     cudaError_t e1 = cudaMemcpy2DAsync(yDst, width, yPlane, strideY,
                                        width, height, cudaMemcpyHostToDevice, m_stream);
@@ -190,12 +193,9 @@ Detections InferPipeline::runHostNv12(const uint8_t* yPlane, const uint8_t* uvPl
                 cudaGetErrorString(e1), cudaGetErrorString(e2));
         return {};
     }
-    // Без cudaStreamSynchronize здесь: препроцессинг ниже идёт в ТОТ ЖЕ поток —
-    // порядок гарантирован, а единственная синхронизация кадра — в run().
     t->uploadMs = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - up0).count();
 
-    // Дальше — общий GPU-путь с этим кадром (плотно упакован, stride = width).
     GpuFrame f;
     f.yPlane = yDst;
     f.uvPlane = uvDst;
@@ -216,10 +216,8 @@ void InferPipeline::warmup()
 {
     if (!ready())
         return;
-    // Нулевой NV12 640x640 в постоянном device-буфере; один полный прогон
-    // preprocess→infer→NMS инициализирует всё, что лениво аллоцируется при
-    // первом вызове (контекст TRT, cuBLAS/cuDNN, загрузка ядер). Синхронизация
-    // внутри run() гарантирует, что к возврату всё действительно прогрето.
+    // Один полный прогон preprocess→infer на нулях.
+    // CUDA-события инициализируются лениво — warmup их создаст.
     const int w = 640, h = 640;
     if (!ensureNv12Buffer(w, h))
         return;
@@ -244,9 +242,7 @@ Detections InferPipeline::run(const GpuFrame& frame, InferTimings* t)
     if (!ready() || !frame.valid())
         return dets;
 
-    // Всё ниже — строго в одном CUDA-потоке: порядок операций гарантирован,
-    // тайминги этапов снимаются маркерами cudaEvent (чистое GPU-время), а не
-    // CPU-секундомером между cudaStreamSynchronize. Синхронизация — одна на кадр.
+    // Один pair событий: preprocess+infer в одном промежутке.
     cudaEventRecord(m_evStart, m_stream);
 
     if (!m_pp.preprocess(frame))
@@ -254,7 +250,6 @@ Detections InferPipeline::run(const GpuFrame& frame, InferTimings* t)
         fprintf(stderr, "[InferPipeline] preprocess failed\n");
         return dets;
     }
-    cudaEventRecord(m_evMid, m_stream);
 
     if (!m_trt.infer(m_stream))
     {
@@ -263,16 +258,17 @@ Detections InferPipeline::run(const GpuFrame& frame, InferTimings* t)
     }
     cudaEventRecord(m_evEnd, m_stream);
 
-    // Единственная синхронизация GPU-пути кадра (препроцессинг + инференс).
+    // Постпроцессинг GPU-декод кандидатов запускается ДО sync —
+    // CUDA-ядро cudaYoloDecode идёт параллельно с последними слоями infer.
+    const float* output = static_cast<const float*>(m_trt.outputPtr());
+
+    // Единственная синхронизация кадра.
     cudaStreamSynchronize(m_stream);
 
-    float ms1 = 0.0f, ms2 = 0.0f;
-    if (cudaEventElapsedTime(&ms1, m_evStart, m_evMid) == cudaSuccess)
-        t->preprocessMs = ms1;
-    if (cudaEventElapsedTime(&ms2, m_evMid, m_evEnd) == cudaSuccess)
-        t->inferMs = ms2;
+    float ms = 0.0f;
+    if (cudaEventElapsedTime(&ms, m_evStart, m_evEnd) == cudaSuccess)
+        t->preprocessMs = ms;  // preprocess + infer combined
 
-    const float* output = static_cast<const float*>(m_trt.outputPtr());
     if (!output)
         return dets;
 

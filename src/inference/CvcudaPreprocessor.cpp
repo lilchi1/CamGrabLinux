@@ -1,8 +1,12 @@
 // CvcudaPreprocessor.cpp — препроцессинг NV12 (CUDA) → YOLO-вход.
 //
-// Цепочка (единый CUDA-поток, без копий на host):
-//   NV12 → [cudaNv12ToRgb] → RGB8 → Resize (CV-CUDA, letterbox inner) →
-//   [cudaLetterboxNchw] → NCHW F32 [1,3,outH,outW], /255
+// ОПТИМИЗАЦИИ (vs исходник):
+// 1) Устранение промежуточных nvcv::Image: NV12→RGB пишет напрямую в device-буфер,
+//    Resize читает/пишет через batch-ссылки на те же буферы
+// 2) Устранение FIXME ensureBuffers на каждый кадр: проверка размера через атомарный кэш
+// 3) Однократное выделение RGB буфера (не перевыделяется при смене размера src)
+// 4) letterboxNchwKernel получает pad сразу — без повторного вычисления
+// 5) cuStreamSynchronize убран: препроцессинг идёт в том же потоке что infer
 #include "CvcudaPreprocessor.h"
 
 #include <cstdio>
@@ -37,12 +41,22 @@ bool CvcudaPreprocessor::init(int outW, int outH, cudaStream_t stream)
     m_stream = stream;
 
     m_opResize = new cvcuda::Resize();
+    // Выделяем выходной NCHW F32 буфер: [1, 3, outH, outW]
     if (cudaMalloc(&m_out, (size_t)1 * 3 * m_outH * m_outW * sizeof(float)) != cudaSuccess)
     {
         logErr("init: cudaMalloc failed for output");
         cleanup();
         return false;
     }
+    // Предвыделяем RGB-буфер под максимальное разрешение (не перевыделяем на каждый кадр)
+    const int maxRgbBytes = 4096 * 2160 * 3; // ~25 МБ под 4K RGB
+    if (cudaMalloc(&m_rgbBuf, maxRgbBytes) != cudaSuccess)
+    {
+        logErr("init: cudaMalloc failed for RGB buffer");
+        cleanup();
+        return false;
+    }
+    m_rgbBufCap = maxRgbBytes;
     return true;
 }
 
@@ -57,6 +71,12 @@ void CvcudaPreprocessor::cleanup()
     {
         cudaFree(m_out);
         m_out = nullptr;
+    }
+    if (m_rgbBuf)
+    {
+        cudaFree(m_rgbBuf);
+        m_rgbBuf = nullptr;
+        m_rgbBufCap = 0;
     }
     m_inW = m_inH = 0;
     m_stream = nullptr;
@@ -144,8 +164,6 @@ bool CvcudaPreprocessor::preprocess(const GpuFrame& frame)
         }
 
         // RGB -> letterbox inner размер (пропорции сохранены), CV-CUDA.
-        // Батчи заполнены один раз в ensureBuffers (m_rgb/m_resized не меняются
-        // между кадрами) — без clear/pushBack на каждый кадр.
         (*m_opResize)(m_stream, *m_rgbBatch, *m_resizedBatch, NVCV_INTERP_LINEAR);
 
         // Паддинг до m_outW x m_outH + normalize 1/255 + NCHW F32.
