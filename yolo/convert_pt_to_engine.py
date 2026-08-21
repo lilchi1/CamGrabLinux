@@ -60,7 +60,14 @@ def collect_calib_images(args):
         import yaml
         with open(args.data) as f:
             data = yaml.safe_load(f)
-        root = data.get("path") or os.path.dirname(os.path.abspath(args.data))
+        # Относительный path в yaml отсчитывается от папки самого yaml
+        # (конвенция Ultralytics), а не от текущего каталога запуска.
+        yaml_dir = os.path.dirname(os.path.abspath(args.data))
+        root = data.get("path")
+        if root and not os.path.isabs(root):
+            root = os.path.join(yaml_dir, root)
+        elif not root:
+            root = yaml_dir
         for split in ("val", "train"):
             d = data.get(split)
             if not d:
@@ -112,6 +119,13 @@ class ImageCalibrator(trt.IInt8EntropyCalibrator2):
     def __init__(self, image_paths, batch_size, imgsz, cache_path):
         import pycuda.driver as cuda
         cuda.init()
+        # Активный CUDA-контекст обязателен для mem_alloc в get_batch.
+        # Обычно его уже создал pycuda.autoinit в build_trt_engine (ДО
+        # createInferBuilder); здесь создаём только если его нет.
+        self._ctx = None
+        if cuda.Context.get_current() is None:
+            from pycuda.tools import make_default_context
+            self._ctx = make_default_context()
         super().__init__()
         self._cuda = cuda
         self._paths = image_paths
@@ -133,7 +147,9 @@ class ImageCalibrator(trt.IInt8EntropyCalibrator2):
             p = self._paths[self._idx % len(self._paths)]
             self._idx += 1
             batch.append(load_and_letterbox(p, self._imgsz))
-        arr = np.stack(batch).astype(np.float32)
+        # ascontiguousarray: после transpose(2,0,1) массив не C-смежный,
+        # memcpy_htod требует непрерывный буфер.
+        arr = np.ascontiguousarray(np.stack(batch), dtype=np.float32)
         self._device = self._cuda.mem_alloc(arr.nbytes)
         self._cuda.memcpy_htod(self._device, arr)
         return [int(self._device)]
@@ -209,6 +225,11 @@ def build_trt_engine(onnx_path, engine_path, precision, imgsz, batch,
                      workspace_gb, calib_images):
     """Парсит ONNX и собирает .engine; int8 — с энтропийной калибровкой."""
     logger = trt.Logger(trt.Logger.WARNING)
+    # Единый CUDA-контекст на весь билд, строго ДО createInferBuilder: если
+    # контекст появится позже (например, из pycuda в калибраторе), TensorRT
+    # теряет свои ресурсы при смене контекста и все тактики падают с
+    # "Cask convolution execution" -> "Could not find any implementation".
+    import pycuda.autoinit  # noqa: F401
     trt.init_libnvinfer_plugins(logger, "")
     builder = trt.Builder(logger)
     network = builder.create_network(

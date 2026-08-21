@@ -20,9 +20,9 @@ bool RtspReader::open(const std::string& url, int timeoutSec) {
 
     // ─── Порядок попыток транспорта ────────────────────────────────────────
     std::vector<std::string> transports;
-    if (g_rtspTransport == "tcp")      transports = { "tcp" };
+    if (g_rtspTransport == "rtp")      transports = { "rtp" };
     else if (g_rtspTransport == "udp") transports = { "udp" };
-    else                               transports = { "udp", "tcp" };  // auto
+    else                               transports = { "udp", "rtp" };  // auto
 
     // ─── Минимальная задержка: общие опции ────────────────────────────────
     char tbuf[32];

@@ -22,6 +22,8 @@ build/
 yolo/*.h5
 yolo/*.onnx
 yolo/*.engine
+yolo/*.cache
+yolo/calib/
 yolo/ultralytics/
 yolo/output_raw.npy
 Build/rtsp_decoder

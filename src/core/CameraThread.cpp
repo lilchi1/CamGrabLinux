@@ -34,15 +34,40 @@ inline double msSince(const Clock::time_point& t0) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
+// Прерываемый сон: просыпается раньше при остановке программы/потока камеры.
+static bool sleepInterruptible(int sec, int camIdx) {
+    for (int s = 0; s < sec && g_running && isCamRunning(camIdx); ++s)
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    return g_running && isCamRunning(camIdx);
+}
+
+// Задержка перед повторной попыткой подключения: 2,4,8,15,15... (backoff).
+static inline int backoffSec(int attempt) {
+    return std::min(15, 1 << std::min(attempt, 4));
+}
+
 }  // namespace
 
 void cameraThread(std::string url, int camIdx) {
     logWrite("INFO", url, "Поток камеры запущен (zero-latency sync pipeline)");
 
     // ─── RTSP-захват ───────────────────────────────────────────────────────
+    // Бесконечные попытки с backoff: камера может быть временно недоступна
+    // (лимит RTSP-сессий, перезагрузка, нестабильная сеть) — поток камеры не
+    // умирает, а ждёт, пока подключение откроется.
     RtspReader reader;
-    if (!reader.open(url)) {
-        logWrite("ERROR", url, "Не удалось открыть RTSP поток");
+    bool opened = false;
+    int openAttempt = 0;
+    while (g_running && isCamRunning(camIdx)) {
+        if (reader.open(url)) { opened = true; break; }
+        openAttempt++;
+        const int waitSec = backoffSec(openAttempt);
+        logWrite("WARN", url, "Подключение не удалось (попытка " +
+                 std::to_string(openAttempt) + "), повтор через " +
+                 std::to_string(waitSec) + " с");
+        if (!sleepInterruptible(waitSec, camIdx)) break;
+    }
+    if (!opened) {
         setCamConnected(camIdx, false, url);
         stopCamRunning(camIdx);
         return;
@@ -350,13 +375,22 @@ void cameraThread(std::string url, int camIdx) {
         int64_t pts;
 
         if (!reader.readPacket(pktData, pktSize, pts)) {
-            logWrite("WARN", url, "Ошибка чтения, попытка переподключения...");
+            logWrite("WARN", url, "Ошибка чтения, переподключение...");
             reader.close();
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (!reader.open(url, 10)) {
-                logWrite("ERROR", url, "Переподключение не удалось");
-                break;
+            // Повторные попытки с backoff вместо выхода из потока: обрыв связи
+            // (WiFi, лимит сессий камеры) не убивает камеру навсегда.
+            bool reopened = false;
+            int reattempt = 0;
+            while (g_running && isCamRunning(camIdx)) {
+                reattempt++;
+                const int waitSec = backoffSec(reattempt);
+                logWrite("WARN", url, "Переподключение (попытка " +
+                         std::to_string(reattempt) + "), ожидание " +
+                         std::to_string(waitSec) + " с");
+                if (!sleepInterruptible(waitSec, camIdx)) break;
+                if (reader.open(url, 10)) { reopened = true; break; }
             }
+            if (!reopened) break;
             gstDec->close();
             if (!gstDec->open(codecId, overlaySink, winHandle, true)) {
                 logWrite("ERROR", url, "Переинициализация NVDEC не удалась");

@@ -1,0 +1,6 @@
+# coco8 — мини-набор Ultralytics для int8-калибровки (smoke-test).
+# Датасет лежит внутри проекта: yolo/calib/coco8 (в .gitignore).
+# Для production-точности лучше 100+ кадров с реальных камер: --calib-dir <папка>.
+path: calib/coco8
+train: images/train
+val: images/val
